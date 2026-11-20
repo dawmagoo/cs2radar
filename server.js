@@ -6,17 +6,16 @@ const { readdirSync } = require('node:fs');
 const path = require('node:path');
 const express = require('express');
 const { WebSocket, WebSocketServer } = require('ws');
-const { renderGsiConfig } = require('./steam');
 const { version } = require('./package.json');
 const { isRecord, readState } = require('./telemetry');
-const { createMapStore, mapKey, maxImageBytes } = require('./map-store');
+const { createMapStore, imageType, mapKey, maxImageBytes } = require('./map-store');
 const { createLanSharing } = require('./lan-sharing');
-const { createGsiSetup } = require('./gsi-setup');
 
 const publicDir = path.join(__dirname, 'public');
 const loopbackHost = '127.0.0.1';
 const localHosts = new Set([loopbackHost, 'localhost', '::1']);
 const gsiRoutes = ['/gsi', '/'];
+const maxCaptureBytes = 192 * 1024;
 const gsiFields = ['provider', 'map', 'player', 'round', 'allplayers', 'phase_countdowns', 'grenades', 'allgrenades', 'bomb'];
 
 function isGsiPost(req) {
@@ -45,12 +44,19 @@ function tokenMatches(received, expected) {
 
 function createFeed() {
   let data = readState({});
+  let capture;
   const listeners = new Set();
   return {
     snapshot: () => ({ ...data, sentAt: Date.now() }),
     publish(state) {
       data = state;
       for (const listener of listeners) listener();
+    },
+    latestCapture: () => capture && Date.now() - capture.receivedAt < 5000 ? capture.bytes : null,
+    setCapture(bytes) {
+      if (!bytes && !capture) return;
+      capture = bytes ? { bytes, receivedAt: Date.now() } : null;
+      for (const listener of listeners) listener('capture');
     },
     subscribe(listener) {
       listeners.add(listener);
@@ -70,10 +76,14 @@ function createRadarServer({
   const localOnly = localHosts.has(host);
   const canManage = localOnly && !readOnly;
   const sharing = canManage ? createLanSharing(async (ip, token) => {
+    feed.setCapture(null);
     const listener = createRadarServer({ host: ip, viewToken: token, feed, readOnly: true, maps });
     try {
       const port = await listener.listen(0);
-      return { port, close: listener.close };
+      return { port, close: async () => {
+        feed.setCapture(null);
+        await listener.close();
+      } };
     } catch (error) {
       await listener.close();
       throw error;
@@ -84,7 +94,7 @@ function createRadarServer({
   const wss = new WebSocketServer({ noServer: true, maxPayload: 2_048 });
   let lastAccepted = 0;
   let closing;
-  let setup;
+  let lastCaptureAt = 0;
   let attemptedAt = 0;
   let rejection = null;
 
@@ -113,8 +123,10 @@ function createRadarServer({
     return tokenMatches(req.headers['x-view-token'] || new URLSearchParams(query).get('token'), viewToken);
   }
 
-  const unsubscribe = feed.subscribe(() => {
-    const message = JSON.stringify(feed.snapshot());
+  const captureEnded = JSON.stringify({ type: 'capture-ended' });
+  const unsubscribe = feed.subscribe(change => {
+    if (change === 'capture' && !readOnly) return;
+    const message = change === 'capture' ? feed.latestCapture() || captureEnded : JSON.stringify(feed.snapshot());
     for (const client of wss.clients) {
       if (client.readyState === WebSocket.OPEN && client.bufferedAmount < 65_536) client.send(message);
     }
@@ -127,7 +139,7 @@ function createRadarServer({
       'X-Content-Type-Options': 'nosniff',
       'X-Frame-Options': 'DENY',
       'Referrer-Policy': 'no-referrer',
-      'Content-Security-Policy': "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+      'Content-Security-Policy': "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' blob:; media-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
     });
     const crossSitePost = isGsiPost(req) && req.get('Sec-Fetch-Site') === 'cross-site';
     if (!sameOrigin(req) || crossSitePost) return res.sendStatus(403);
@@ -143,10 +155,10 @@ function createRadarServer({
     const state = feed.snapshot();
     res.json({
       ok: true, version, updated: state.updated, clients: wss.clients.size,
-      viewTokenRequired: Boolean(viewToken), viewOnly: readOnly, manageMaps: canManage,
+      viewTokenRequired: Boolean(viewToken), viewOnly: readOnly, manageMaps: canManage, captureAvailable: canManage,
       ...(canManage ? { receiver: {
         attemptedAt, rejection, positions: state.players.length, observer: state.observer,
-        setupAvailable: Boolean(setup), map: state.map,
+        map: state.map,
       } } : {}),
     });
   });
@@ -207,22 +219,19 @@ function createRadarServer({
     res.json(names.filter(name => /^[a-z0-9_-]+\.png$/i.test(name)));
   });
 
-  app.get('/api/gsi-setup', manage, (req, res) => setup ? res.json(setup.status()) : res.sendStatus(404));
-  app.post('/api/gsi-setup', manage, express.json({ limit: '4kb' }), asyncRoute(async (req, res) => {
-    if (!setup) return res.sendStatus(404);
-    const action = req.body?.action;
-    if (action === 'detect') return res.json(await setup.detect());
-    if (action === 'choose') return res.json(await setup.choose(req.body.directory));
-    if (action === 'replace') return res.json(await setup.replace());
-    res.sendStatus(400);
-  }));
-
-  app.get('/api/gsi-config', (req, res) => {
-    if (readOnly) return res.sendStatus(404);
-    const canDownloadToken = canManage && canView(req) && req.get('Sec-Fetch-Site') !== 'cross-site';
-    res.attachment('gamestate_integration_webradar.cfg')
-      .type('text/plain')
-      .send(renderGsiConfig(server.address().port, canDownloadToken ? gsiToken : ''));
+  app.put('/api/capture/frame', manage, express.raw({ type: 'image/jpeg', limit: maxCaptureBytes, inflate: false }),
+    (req, res) => {
+      if (!sharing.active()) return res.sendStatus(409);
+      if (!Buffer.isBuffer(req.body) || imageType(req.body) !== 'image/jpeg') return res.sendStatus(415);
+      const now = Date.now();
+      if (now - lastCaptureAt < 70) return res.sendStatus(202);
+      lastCaptureAt = now;
+      feed.setCapture(req.body);
+      res.sendStatus(204);
+    });
+  app.delete('/api/capture/frame', manage, (req, res) => {
+    feed.setCapture(null);
+    res.sendStatus(204);
   });
 
   if (readOnly) app.post(gsiRoutes, (req, res) => res.sendStatus(405));
@@ -283,6 +292,8 @@ function createRadarServer({
     client.on('pong', () => waitingForPong.delete(client));
     client.on('close', () => waitingForPong.delete(client));
     client.send(JSON.stringify(feed.snapshot()));
+    const capture = readOnly && feed.latestCapture();
+    if (capture) client.send(capture);
   });
 
   function listen(port) {
@@ -313,7 +324,7 @@ function createRadarServer({
     return closing;
   }
 
-  return { listen, close, feed, sharing, attachGsiSetup: value => { setup = value; } };
+  return { listen, close, feed, sharing };
 }
 
 async function startWeb() {
@@ -329,19 +340,6 @@ async function startWeb() {
   console.log(`CS2 WebRadar: http://${host.includes(':') ? `[${host}]` : host}:${port}`);
   if (port !== requestedPort) console.log(`Port ${requestedPort} jest zajęty. Otwórz adres z portem ${port}.`);
   for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => radar.close());
-
-  // An IPv6-only listener cannot use the IPv4 URI from the current GSI template.
-  if (host === loopbackHost || host === '0.0.0.0') {
-    const setup = createGsiSetup({ port, token, preserveToken: true });
-    if (host === loopbackHost) radar.attachGsiSetup(setup);
-    const specified = process.env.CS2_PATH;
-    if (host === loopbackHost || specified) {
-      const status = await (specified ? setup.choose(specified) : setup.detect());
-      console.log(`GSI: ${status.message}`);
-      if (status.path) console.log(status.path);
-      if (status.detail) console.log(status.detail);
-    }
-  }
 }
 
 if (require.main === module) {

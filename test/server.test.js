@@ -87,8 +87,6 @@ test('invalid websocket origins and host headers are rejected without stopping t
   assert.equal(wrongHost, 403);
   const response = await fetch(`http://127.0.0.1:${port}/health`);
   assert.equal(response.status, 200);
-  const download = await fetch(`http://127.0.0.1:${port}/api/gsi-config`);
-  assert.match(await download.text(), new RegExp(`127\\.0\\.0\\.1:${port}/gsi`));
 });
 
 test('authenticated LAN preview gets the official observer feed and rejects writes', async t => {

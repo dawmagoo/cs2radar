@@ -38,6 +38,7 @@ function createLanSharing(startListener, addresses = localAddresses) {
 
   return {
     status,
+    active: () => Boolean(share),
     start(ip) {
       return change(async () => {
         if (!addresses().some(address => address.ip === ip)) {

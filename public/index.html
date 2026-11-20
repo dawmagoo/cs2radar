@@ -3,41 +3,62 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#101619">
+  <meta name="theme-color" content="#161b22">
   <title>CS2 WebRadar</title>
   <link rel="stylesheet" href="/style.css">
   <script src="/app.js" type="module"></script>
 </head>
 <body>
-  <header class="topbar">
-    <div class="shell topbar-inner">
-      <div class="brand">
-        <span class="brand-mark" aria-hidden="true"></span>
-        <h1>CS2 <span>WebRadar</span></h1>
+  <div class="app-frame">
+    <aside class="rail" aria-label="Menu aplikacji">
+      <div class="rail-brand"><span class="brand-mark" aria-hidden="true">WR</span><span>CS2 WebRadar</span></div>
+      <nav class="rail-nav" aria-label="Nawigacja">
+        <button id="goRadar" class="rail-entry current" type="button"><span class="nav-icon" aria-hidden="true">◎</span>Radar</button>
+        <button id="goCapture" class="rail-entry" type="button"><span class="nav-icon screen-icon" aria-hidden="true"></span>Przechwytywanie</button>
+        <button id="goTelemetry" class="rail-entry" type="button"><span class="nav-icon" aria-hidden="true">≋</span>Telemetria</button>
+        <button id="goMap" class="rail-entry" type="button"><span class="nav-icon" aria-hidden="true">◇</span>Mapy</button>
+        <button id="goView" class="rail-entry" type="button"><span class="nav-icon" aria-hidden="true">⚙</span>Ustawienia</button>
+        <button id="goShare" class="rail-entry" type="button" hidden><span class="nav-icon" aria-hidden="true">↗</span>Podgląd LAN</button>
+      </nav>
+      <div class="rail-footer">
+        <span class="rail-badge" aria-hidden="true">●</span>
+        <div><strong>Sesja radaru</strong><span id="railMode">Podgląd gotowy</span></div>
       </div>
-      <div class="actions">
-        <span id="status" class="status" data-state="waiting" role="status">Łączenie z radarem…</span>
-        <button id="demo" class="button" type="button" aria-pressed="false">Tryb demo</button>
-        <button id="share" class="button" type="button" hidden>Udostępnij LAN</button>
-        <button id="setup" class="button" type="button">Konfiguracja GSI</button>
-      </div>
-    </div>
-  </header>
+    </aside>
 
-  <main class="shell layout" id="dashboard">
-    <section class="panel radar-panel" aria-labelledby="map">
-      <header class="section-header">
-        <div>
-          <h2 id="map">Mirage</h2>
-          <div id="mapMode" class="subtle">Mapa automatyczna</div>
-        </div>
-        <div class="actions zoom-controls" aria-label="Sterowanie powiększeniem">
-          <button class="button icon-button" id="zoomOut" type="button" aria-label="Oddal" title="Oddal">−</button>
-          <output id="zoomLabel" aria-label="Powiększenie">100%</output>
-          <button class="button icon-button" id="zoomIn" type="button" aria-label="Przybliż" title="Przybliż">+</button>
-          <button class="button" id="reset" type="button">Reset widoku</button>
+    <div class="workbench">
+      <header class="topbar">
+        <h1>Radar CS2</h1>
+        <div class="actions">
+          <span id="status" class="status" data-state="waiting" role="status">Łączenie z radarem…</span>
+          <button id="demo" class="button" type="button" aria-pressed="false">Tryb demo</button>
+          <button id="share" class="button" type="button" hidden>Udostępnij LAN</button>
+          <button id="capture" class="button dark" type="button" hidden>Przechwyć okno</button>
+          <button id="stopCapture" class="button" type="button" hidden>Zakończ</button>
         </div>
       </header>
+
+      <main class="layout" id="dashboard">
+        <section class="radar-panel" aria-labelledby="map">
+          <header class="section-header">
+            <div class="map-heading">
+              <h2 id="map">Mirage</h2>
+              <p id="mapMode" class="subtle">Mapa automatyczna</p>
+            </div>
+            <div class="actions map-controls">
+              <label class="select-label" id="mapField">Mapa <select id="mapSelect"></select></label>
+              <label id="levelWrap" class="select-label" hidden>Poziom
+                <select id="levelSelect">
+                  <option value="auto">Auto (Z)</option>
+                  <option value="upper">Górny</option>
+                  <option value="lower">Dolny</option>
+                </select>
+              </label>
+              <button id="autoMap" class="button" type="button" aria-pressed="true">Auto mapa</button>
+              <button id="focusMode" class="button" type="button" aria-pressed="false">Większy widok</button>
+            </div>
+          </header>
+          <p id="captureFeedback" class="capture-feedback" role="status" hidden></p>
       <div class="radar-frame">
         <canvas id="radar" width="800" height="800" role="img" aria-label="Radar pozycji gracza. Współrzędne są też w panelu telemetrii."></canvas>
         <div class="radar-tags">
@@ -46,38 +67,29 @@
           <span id="sourceTag" hidden>Obserwator</span>
         </div>
         <div id="radarHint" class="radar-hint" hidden></div>
-        <section id="gsiWaiting" class="gsi-waiting" aria-labelledby="gsiWaitingTitle" hidden>
-          <h3 id="gsiWaitingTitle">Radar czeka na dane z CS2</h3>
-          <p id="gsiWaitingMessage" role="status">Sprawdzam konfigurację GSI.</p>
-          <button id="waitingSetup" class="button primary" type="button">Sprawdź konfigurację</button>
-        </section>
+        <div class="zoom-controls" aria-label="Sterowanie radarem">
+          <button class="button icon-button" id="center" type="button" aria-label="Wyśrodkuj gracza" title="Wyśrodkuj gracza" disabled>◎</button>
+          <button class="button icon-button" id="zoomIn" type="button" aria-label="Przybliż" title="Przybliż">+</button>
+          <output id="zoomLabel" aria-label="Powiększenie">100%</output>
+          <button class="button icon-button" id="zoomOut" type="button" aria-label="Oddal" title="Oddal">−</button>
+          <button class="button icon-button" id="reset" type="button" aria-label="Reset widoku" title="Reset widoku">↻</button>
+        </div>
       </div>
-      <div class="radar-legend" aria-label="Oznaczenia na radarze">
+      <div class="radar-legend" id="radarLegend" aria-label="Oznaczenia na radarze">
         <span><i class="legend-dot ct"></i>CT</span>
         <span><i class="legend-dot t"></i>T</span>
         <span><i class="legend-dot bomb"></i>Bomba</span>
       </div>
-      <footer class="map-controls">
-        <label class="select-label">Mapa <select id="mapSelect"></select></label>
-        <label id="levelWrap" class="select-label" hidden>Poziom
-          <select id="levelSelect">
-            <option value="auto">Auto (Z)</option>
-            <option value="upper">Górny</option>
-            <option value="lower">Dolny</option>
-          </select>
-        </label>
-        <button id="autoMap" class="button" type="button" aria-pressed="true">Automatyczna mapa</button>
-        <button id="center" class="button" type="button" disabled>Wyśrodkuj gracza</button>
-        <button id="focusMode" class="button" type="button" aria-pressed="false">Większa mapa</button>
-      </footer>
     </section>
 
     <aside class="sidebar" aria-label="Dane i ustawienia radaru">
-      <section class="panel telemetry-panel" aria-labelledby="telemetry-heading">
+      <section class="panel telemetry-panel" id="telemetryPanel" aria-labelledby="telemetry-heading">
         <div class="panel-heading">
           <h2 id="telemetry-heading">Telemetria GSI</h2>
           <span id="lastUpdate" class="subtle">—</span>
         </div>
+        <p id="telemetryText" class="subtle">Dane gracza pojawią się ze strumienia GSI lub w trybie demo.</p>
+        <div id="telemetryFields" hidden>
         <div class="scoreboard" aria-label="Wynik meczu">
           <div><span class="team-label ct">CT</span><strong id="ctScore">—</strong></div>
           <div class="round-info">
@@ -102,6 +114,7 @@
             <div class="weapon" id="utilityPanel" hidden><dt>Wyposażenie</dt><dd id="playerUtility">—</dd></div>
           </dl>
         </div>
+        </div>
       </section>
 
       <section class="panel team-panel" id="teamPanel" aria-labelledby="teamsHeading" hidden>
@@ -109,6 +122,7 @@
           <h2 id="teamsHeading">Drużyny</h2>
           <button id="clearPlayer" class="button" type="button" hidden>Auto</button>
         </div>
+        <label class="field roster-filter">Szukaj gracza <input id="rosterFilter" type="search" autocomplete="off"></label>
         <div id="roster"></div>
       </section>
 
@@ -159,14 +173,16 @@
         </form>
       </details>
     </aside>
-  </main>
+      </main>
+    </div>
+  </div>
 
   <dialog id="shareDialog" aria-labelledby="shareTitle">
     <div class="dialog-heading">
       <h2 id="shareTitle">Podgląd w sieci lokalnej</h2>
       <button id="closeShare" class="button icon-button" type="button" aria-label="Zamknij" title="Zamknij">×</button>
     </div>
-    <p>Otwórz link na telefonie, tablecie lub drugim komputerze w tej samej sieci. Link daje dostęp do podglądu, dopóki udostępnianie jest włączone.</p>
+    <p>Otwórz link na telefonie, tablecie lub drugim komputerze w tej samej sieci. Link daje dostęp do telemetrii i do kadru, jeśli zaznaczysz jego udostępnianie.</p>
     <label class="field">Adres tego komputera <select id="shareNetwork"></select></label>
     <label class="field" id="shareLinkWrap" hidden>Link podglądu <input id="shareLink" type="url" readonly></label>
     <div class="actions">
@@ -177,40 +193,28 @@
     <p id="shareFeedback" class="subtle" role="status"></p>
   </dialog>
 
-  <dialog id="setupDialog" aria-labelledby="setupTitle">
+  <dialog id="captureDialog" aria-labelledby="captureTitle">
     <div class="dialog-heading">
-      <h2 id="setupTitle">Konfiguracja GSI</h2>
-      <button id="closeSetup" class="button icon-button" type="button" aria-label="Zamknij" title="Zamknij">×</button>
+      <h2 id="captureTitle">Kadr minimapy</h2>
+      <button id="captureClose" class="button icon-button" type="button" aria-label="Zamknij" title="Zamknij">×</button>
     </div>
-    <p id="setupMessage" role="status">Sprawdzam konfigurację…</p>
-    <p id="receiverStatus" class="receiver-status subtle" role="status"></p>
-    <p id="setupPath" class="subtle setup-path" hidden></p>
-    <p id="setupDetail" class="subtle setup-path" hidden></p>
-    <dl class="endpoint"><dt>Adres GSI</dt><dd id="setupAddress"></dd></dl>
-    <div id="desktopSetup" class="actions" hidden>
-      <button id="detect" data-gsi class="button" type="button">Wykryj przez Steam</button>
-      <button id="choose" data-gsi class="button primary" type="button">Wybierz folder CS2</button>
-      <button id="replace" data-gsi class="button" type="button" hidden>Zastąp z kopią</button>
-      <button id="saveConfig" data-gsi class="button" type="button">Zapisz plik GSI</button>
+    <p id="captureMessage" role="status"></p>
+    <div id="captureSourcePanel" hidden>
+      <label class="field">Okno lub ekran <select id="captureSource"></select></label>
+      <button id="captureSourceButton" class="button dark" type="button">Pokaż podgląd</button>
     </div>
-    <div id="browserSetup" hidden>
-      <div id="webSetupControls" hidden>
-        <div class="actions">
-          <button id="webDetect" class="button" type="button" data-gsi>Wykryj przez Steam</button>
-          <button id="webReplace" class="button" type="button" data-gsi hidden>Zastąp z kopią</button>
-        </div>
-        <form id="gameFolderForm" class="game-folder-form">
-          <label class="field">Folder instalacji CS2
-            <input id="gameFolder" type="text" autocomplete="off" spellcheck="false" required>
-          </label>
-          <button class="button primary" type="submit" data-gsi>Zapisz w tym folderze</button>
-        </form>
-        <p class="subtle">Ścieżkę znajdziesz w Steam, wybierając CS2 → Właściwości → Zainstalowane pliki → Przeglądaj.</p>
+    <div id="captureCropPanel" hidden>
+      <canvas id="capturePreview" width="960" height="540" aria-label="Podgląd źródła z zaznaczonym kadrem"></canvas>
+      <div class="crop-controls">
+        <label class="field">W poziomie <input id="cropX" type="range" min="0" max="1000" value="18"></label>
+        <label class="field">W pionie <input id="cropY" type="range" min="0" max="1000" value="18"></label>
+        <label class="field">Rozmiar <input id="cropScale" type="range" min="50" max="850" value="280"></label>
       </div>
-      <a class="button" href="/api/gsi-config" download>Pobierz plik GSI</a>
-      <p class="subtle">Do ręcznej instalacji zapisz plik w <code>game/csgo/cfg</code> w katalogu CS2 i uruchom grę ponownie.</p>
+      <div class="crop-actions">
+        <label class="check-field"><input id="captureLan" type="checkbox"> Przekazuj ten kadr do aktywnego podglądu LAN</label>
+        <button id="captureApply" class="button dark" type="button">Użyj kadru</button>
+      </div>
     </div>
-    <p id="setupFeedback" class="subtle" role="status"></p>
   </dialog>
 </body>
 </html>

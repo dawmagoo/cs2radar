@@ -2,12 +2,9 @@
 
 const { contextBridge, ipcRenderer } = require('electron');
 
-contextBridge.exposeInMainWorld('webRadarSetup', {
-  status: () => ipcRenderer.invoke('setup:status'),
-  detect: () => ipcRenderer.invoke('setup:detect'),
-  choose: () => ipcRenderer.invoke('setup:choose'),
-  replace: () => ipcRenderer.invoke('setup:replace'),
-  save: () => ipcRenderer.invoke('setup:save'),
+contextBridge.exposeInMainWorld('webRadarDesktop', {
+  captureSources: () => ipcRenderer.invoke('capture:sources'),
+  selectCapture: id => ipcRenderer.invoke('capture:select', id),
   shareStatus: () => ipcRenderer.invoke('share:status'),
   shareStart: ip => ipcRenderer.invoke('share:start', ip),
   shareStop: () => ipcRenderer.invoke('share:stop'),

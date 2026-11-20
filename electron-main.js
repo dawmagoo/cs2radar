@@ -1,51 +1,67 @@
 'use strict';
 
-const { app, BrowserWindow, clipboard, dialog, ipcMain, Menu } = require('electron');
-const { randomBytes } = require('node:crypto');
-const fs = require('node:fs/promises');
+const { app, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, Menu } = require('electron');
 const path = require('node:path');
 const { bindLocalRadar, createRadarServer } = require('./server');
-const { createGsiSetup } = require('./gsi-setup');
-const { configName, renderGsiConfig } = require('./steam');
 
 let window;
 let radar;
-let url;
-let port;
-let settings;
-let settingsPath;
-let gsiSetup;
 
-async function readSettings() {
-  try {
-    const saved = JSON.parse(await fs.readFile(settingsPath, 'utf8'));
-    return {
-      token: typeof saved?.token === 'string' && /^[a-f0-9]{64}$/.test(saved.token) ? saved.token : randomBytes(32).toString('hex'),
-      preferredPort: Number.isInteger(saved?.preferredPort) && saved.preferredPort >= 3000 && saved.preferredPort <= 3010 ? saved.preferredPort : 3000,
-      configDir: typeof saved?.configDir === 'string' ? saved.configDir : '',
-    };
-  } catch (error) {
-    if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error;
-    return { token: randomBytes(32).toString('hex'), preferredPort: 3000, configDir: '' };
-  }
-}
+function configureWindow(contents, url) {
+  const origin = new URL(url).origin;
+  const isDashboardOrigin = value => value === origin || value === url;
+  const session = contents.session;
+  let sources = new Map();
+  let selection;
 
-async function saveSettings() {
-  await fs.mkdir(path.dirname(settingsPath), { recursive: true });
-  const temporary = `${settingsPath}.tmp`;
-  await fs.writeFile(temporary, JSON.stringify(settings, null, 2), { mode: 0o600 });
-  await fs.rename(temporary, settingsPath);
-}
+  contents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  contents.on('will-navigate', event => event.preventDefault());
+  contents.on('will-redirect', event => event.preventDefault());
 
-function registerSetupHandlers() {
-  function handle(channel, handler) {
-    ipcMain.handle(channel, (event, ...args) => {
-      if (!window || event.sender !== window.webContents || event.senderFrame?.url !== url || event.senderFrame !== window.webContents.mainFrame) {
+  const validSelection = () => selection && selection.expires > Date.now();
+  session.setPermissionRequestHandler((sender, permission, respond) => {
+    respond(Boolean(sender === contents && permission === 'display-capture' && validSelection()));
+  });
+  session.setPermissionCheckHandler((sender, permission, requestingOrigin) =>
+    Boolean(sender === contents && permission === 'display-capture' && isDashboardOrigin(requestingOrigin) && validSelection()));
+  session.setDisplayMediaRequestHandler((request, respond) => {
+    const selected = validSelection() ? selection.source : null;
+    selection = null;
+    if (selected && request.frame === contents.mainFrame && isDashboardOrigin(request.securityOrigin)
+      && request.userGesture && request.videoRequested && !request.audioRequested) {
+      respond({ video: selected });
+    } else {
+      respond(null);
+    }
+  });
+
+  function handle(channel, action) {
+    ipcMain.handle(channel, (event, ...values) => {
+      if (event.sender !== contents || event.senderFrame !== contents.mainFrame || event.senderFrame?.url !== url) {
         throw new Error('Nieprawidłowe źródło żądania.');
       }
-      return handler(...args);
+      return action(...values);
     });
   }
+
+  handle('capture:sources', async () => {
+    selection = null;
+    const available = await desktopCapturer.getSources({
+      types: ['window', 'screen'], thumbnailSize: { width: 0, height: 0 },
+    });
+    const ownWindow = contents.getMediaSourceId();
+    const ordered = available.filter(source => source.id !== ownWindow && source.name !== 'CS2 WebRadar')
+      .sort((a, b) => Number(/counter-strike 2/i.test(b.name)) - Number(/counter-strike 2/i.test(a.name)));
+    sources = new Map(ordered.map(source => [source.id, source]));
+    return ordered.map(({ id, name }) => ({ id, name }));
+  });
+  handle('capture:select', id => {
+    const source = sources.get(id);
+    sources.clear();
+    if (!source) return false;
+    selection = { source, expires: Date.now() + 15_000 };
+    return true;
+  });
 
   handle('share:status', radar.sharing.status);
   handle('share:start', radar.sharing.start);
@@ -56,91 +72,33 @@ function registerSetupHandlers() {
     clipboard.writeText(link);
     return true;
   });
-
-  handle('setup:status', gsiSetup.status);
-  handle('setup:detect', gsiSetup.detect);
-
-  handle('setup:choose', async () => {
-    const result = await dialog.showOpenDialog(window, {
-      title: 'Wybierz folder instalacji CS2',
-      defaultPath: settings.configDir || app.getPath('home'),
-      properties: ['openDirectory'],
-    });
-    return result.canceled ? gsiSetup.status() : gsiSetup.choose(result.filePaths[0]);
-  });
-
-  handle('setup:replace', async () => {
-    const current = gsiSetup.status();
-    if (current.state !== 'conflict') return current;
-    const result = await dialog.showMessageBox(window, {
-      type: 'question',
-      title: 'Zastąp konfigurację WebRadar',
-      message: 'Zastąpić plik GSI aktualną konfiguracją?',
-      detail: `${current.path}\n\nKopia dotychczasowego pliku zostanie obok w folderze cfg.`,
-      buttons: ['Zachowaj plik', 'Zastąp i zapisz kopię'],
-      defaultId: 0,
-      cancelId: 0,
-    });
-    return result.response === 1 ? gsiSetup.replace() : current;
-  });
-
-  handle('setup:save', async () => {
-    const result = await dialog.showSaveDialog(window, {
-      title: 'Zapisz konfigurację GSI',
-      defaultPath: path.join(app.getPath('downloads'), configName),
-      filters: [{ name: 'Konfiguracja CS2', extensions: ['cfg'] }],
-    });
-    if (result.canceled || !result.filePath) return { saved: false };
-    await fs.writeFile(result.filePath, renderGsiConfig(port, settings.token));
-    return { saved: true, path: result.filePath };
-  });
 }
 
 async function main() {
   app.setAppUserModelId('pl.cs2webradar.desktop');
   Menu.setApplicationMenu(null);
-  settingsPath = path.join(app.getPath('userData'), 'desktop.json');
-  settings = await readSettings();
-  radar = createRadarServer({ gsiToken: settings.token });
-  port = await bindLocalRadar(radar, settings.preferredPort);
-  settings.preferredPort = port;
-  await saveSettings();
-  gsiSetup = createGsiSetup({
-    port, token: settings.token, preferred: settings.configDir,
-    remember: async directory => {
-      if (settings.configDir === directory) return;
-      settings.configDir = directory;
-      await saveSettings();
-    },
-  });
-  radar.attachGsiSetup(gsiSetup);
-
-  url = `http://127.0.0.1:${port}/`;
+  radar = createRadarServer({ gsiToken: process.env.GSI_TOKEN || '' });
+  const port = await bindLocalRadar(radar);
+  const url = `http://127.0.0.1:${port}/`;
   window = new BrowserWindow({
     title: 'CS2 WebRadar',
-    width: 1280,
-    height: 930,
-    minWidth: 410,
+    width: 1360,
+    height: 900,
+    minWidth: 420,
     minHeight: 560,
-    backgroundColor: '#101619',
+    backgroundColor: '#161b22',
     show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: true,
+      backgroundThrottling: false,
     },
   });
-  const contents = window.webContents;
-  contents.setWindowOpenHandler(() => ({ action: 'deny' }));
-  contents.on('will-navigate', event => event.preventDefault());
-  contents.on('will-redirect', event => event.preventDefault());
-  contents.session.setPermissionRequestHandler((source, permission, allow) => allow(false));
-  contents.session.setPermissionCheckHandler(() => false);
+  configureWindow(window.webContents, url);
   window.on('closed', () => { window = null; });
   window.once('ready-to-show', () => window?.show());
-  registerSetupHandlers();
-  void (process.env.CS2_PATH ? gsiSetup.choose(process.env.CS2_PATH) : gsiSetup.detect());
   await window.loadURL(url);
 }
 

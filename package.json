@@ -1,8 +1,8 @@
 {
   "name": "cs2-webradar",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "private": true,
-  "description": "Lokalny radar i podgląd telemetrii CS2 Game State Integration",
+  "description": "Radar CS2 z podglądem minimapy i opcjonalną telemetrią GSI",
   "main": "electron-main.js",
   "scripts": {
     "start": "node server.js",
@@ -31,15 +31,12 @@
     "files": [
       "electron-main.js",
       "preload.js",
-      "steam.js",
       "server.js",
       "telemetry.js",
-      "gamestate_integration_webradar.cfg",
       "public/**/*",
       "package.json",
       "map-store.js",
-      "lan-sharing.js",
-      "gsi-setup.js"
+      "lan-sharing.js"
     ],
     "win": {
       "target": "nsis",

@@ -1,45 +1,13 @@
 'use strict';
 
 const { execFile } = require('node:child_process');
-const { randomUUID } = require('node:crypto');
-const { readFileSync } = require('node:fs');
 const { homedir } = require('node:os');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { promisify } = require('node:util');
 
-const configName = 'gamestate_integration_webradar.cfg';
-const template = readFileSync(path.join(__dirname, configName), 'utf8');
-const previousTemplate = template.slice(0, template.indexOf('    "player_match_stats"')) + '  }\n}\n';
-const legacy = previousTemplate.replace('"heartbeat" "8.0"', '"heartbeat" "30.0"').replace('    "round" "1"\n', '');
 const exec = promisify(execFile);
 const gameName = 'Counter-Strike Global Offensive';
-
-function renderGsiConfig(port, token = '', source = template) {
-  if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error('Nieprawidłowy port GSI.');
-  if (typeof token !== 'string' || token.length > 512 || /["\\\x00-\x1f\x7f]/.test(token)) {
-    throw new Error('Token GSI musi być ciągiem bez cudzysłowów, ukośników odwrotnych i znaków sterujących.');
-  }
-  const config = source.replace('127.0.0.1:3000', `127.0.0.1:${port}`);
-  return token ? config.replace('  "data"', `  "auth"\n  {\n    "token" "${token}"\n  }\n  "data"`) : config;
-}
-
-function normalize(content) {
-  return content.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').trim();
-}
-
-function readManagedConfig(content) {
-  const oldPort = Number(content.match(/"uri"\s+"http:\/\/127\.0\.0\.1:(\d{1,5})\/gsi"/)?.[1]);
-  if (!Number.isInteger(oldPort) || oldPort < 1 || oldPort > 65_535) return null;
-  const oldToken = content.match(/"token"\s+"([^"\r\n]*)"/)?.[1] ?? '';
-  try {
-    const managed = [template, previousTemplate, legacy]
-      .some(source => normalize(content) === normalize(renderGsiConfig(oldPort, oldToken, source)));
-    return managed ? { port: oldPort, token: oldToken } : null;
-  } catch {
-    return null;
-  }
-}
 
 function vdfStrings(content, key) {
   const pattern = new RegExp(`"${key}"\\s+"((?:\\\\.|[^"\\\\])*)"`, 'gi');
@@ -134,35 +102,4 @@ async function findConfigDirectory(preferred, explicitRoots) {
     ?? candidates.find(candidate => candidate.directory))?.directory ?? null;
 }
 
-async function installGsiConfig(directory, port, token, { replace = false, preserveToken = false } = {}) {
-  const target = path.join(directory, configName);
-  let existing;
-  try {
-    existing = await fs.readFile(target, 'utf8');
-  } catch (error) {
-    if (error.code !== 'ENOENT') throw error;
-    await fs.writeFile(target, renderGsiConfig(port, token), { flag: 'wx' });
-    return { state: 'restart', path: target };
-  }
-
-  const managed = readManagedConfig(existing);
-  const effectiveToken = preserveToken && !token && managed ? managed.token : token;
-  const config = renderGsiConfig(port, effectiveToken);
-  if (normalize(existing) === normalize(config)) return { state: 'ready', path: target };
-  if (!replace && !managed) return { state: 'conflict', path: target };
-
-  const suffix = randomUUID().slice(0, 8);
-  const backup = `${target}.${Date.now()}-${suffix}.bak`;
-  const temporary = `${target}.${suffix}.tmp`;
-  await fs.writeFile(backup, existing, { flag: 'wx' });
-  try {
-    await fs.writeFile(temporary, config, { flag: 'wx' });
-    if (await fs.readFile(target, 'utf8') !== existing) return { state: 'conflict', path: target };
-    await fs.rename(temporary, target);
-  } finally {
-    await fs.rm(temporary, { force: true }).catch(() => {});
-  }
-  return { state: 'restart', path: target, backup };
-}
-
-module.exports = { configName, findConfigDirectory, installGsiConfig, renderGsiConfig, resolveConfigDirectory };
+module.exports = { findConfigDirectory, resolveConfigDirectory };

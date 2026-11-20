@@ -32,16 +32,16 @@ export function createRadar(canvas, onZoom, onSelect) {
   }
 
   function grid() {
-    ctx.fillStyle = '#152329';
+    ctx.fillStyle = '#edf1ee';
     ctx.fillRect(0, 0, size, size);
     ctx.lineWidth = 1;
     for (let index = 0; index <= 20; index += 1) {
       const step = index * size / 20;
-      ctx.strokeStyle = index % 5 === 0 ? '#354e55' : '#25383e';
+      ctx.strokeStyle = index % 5 === 0 ? '#d1dcd4' : '#e1e8e2';
       line(step, 0, step, size);
       line(0, step, size, step);
     }
-    ctx.strokeStyle = '#39535b';
+    ctx.strokeStyle = '#bdcec2';
     ctx.setLineDash([4, 7]);
     for (const radius of [size / 8, size / 4, size * 3 / 8]) {
       ctx.beginPath();
@@ -58,12 +58,12 @@ export function createRadar(canvas, onZoom, onSelect) {
       ctx.beginPath();
       ctx.arc(point.x, point.y, radius * 1.75, 0, Math.PI * 2);
       ctx.lineWidth = 2 / zoom;
-      ctx.strokeStyle = '#defff1';
+      ctx.strokeStyle = '#1f9d6c';
       ctx.stroke();
     }
-    const color = player.team === 'CT' ? '#91c8ff' : player.team === 'T' ? '#ffd092' : '#8aefc7';
+    const color = selected ? '#169567' : player.team === 'CT' ? '#3571b1' : player.team === 'T' ? '#a45e22' : '#2f4035';
     ctx.lineWidth = 2.5 / zoom;
-    ctx.strokeStyle = '#111b20';
+    ctx.strokeStyle = '#ffffff';
     ctx.fillStyle = color;
     ctx.beginPath();
     if (Number.isFinite(player.angle)) {
@@ -85,7 +85,7 @@ export function createRadar(canvas, onZoom, onSelect) {
     }
     if (!frame.names) return;
     ctx.font = `600 ${(selected ? 16 : 14) * frame.markerScale / zoom}px system-ui`;
-    ctx.fillStyle = '#f3fafc';
+    ctx.fillStyle = '#15251b';
     ctx.lineWidth = 4 / zoom;
     const labelX = Math.min(point.x + 18 / zoom, size - 22 / zoom);
     const labelY = Math.max(point.y - 13 / zoom, 19 / zoom);
@@ -95,7 +95,7 @@ export function createRadar(canvas, onZoom, onSelect) {
 
   function drawUtility({ item, point, trail }) {
     const radius = (item.type === 'bomb' ? 7 : 6) / zoom;
-    const colors = { smoke: '#b9d5e0', flashbang: '#fbf0b6', molotov: '#ffad78', inferno: '#ffad78', frag: '#ffa29b', decoy: '#cbaaff', bomb: '#ffd092' };
+    const colors = { smoke: '#39677a', flashbang: '#927a17', molotov: '#a95b34', inferno: '#a95b34', frag: '#ad554b', decoy: '#8158ab', bomb: '#a6591a' };
     const color = Object.hasOwn(colors, item.type) ? colors[item.type] : '#aac6c8';
     if (trail.length > 1) {
       ctx.save();
@@ -176,7 +176,7 @@ export function createRadar(canvas, onZoom, onSelect) {
     const players = visualPlayers(time);
     if (frame.follow && !pointers.size) positionCenter(focusedPoint(players));
     ctx.setTransform(canvas.width / size, 0, 0, canvas.height / size, 0, 0);
-    ctx.fillStyle = '#0e181c';
+    ctx.fillStyle = '#edf1ee';
     ctx.fillRect(0, 0, size, size);
     ctx.save();
     ctx.translate(middle + panX, middle + panY);

@@ -4,24 +4,13 @@ import {
 import { createRadar, onMap, project } from './radar.js';
 import { demoState } from './demo.js';
 import { createLocalApi } from './local-api.js';
+import { createHudCapture } from './capture.js';
 
 const $ = id => document.getElementById(id);
 const dash = '—';
-const setup = window.webRadarSetup;
+const desktop = window.webRadarDesktop;
 const api = createLocalApi(() => $('auth').value.trim());
-const sharingControls = setup ?? api;
-const setupControls = setup ?? {
-  detect: () => api.configureGsi('detect'),
-  choose: () => api.configureGsi('choose', $('gameFolder').value),
-  replace: () => api.configureGsi('replace'),
-};
-const gsiRejections = {
-  auth: 'Gra używa innego tokenu GSI. Zapisz aktualny plik i uruchom CS2 ponownie.',
-  host: 'Pakiet dotarł pod niewłaściwy adres. Zapisz aktualny plik, aby ustawić adres tego radaru.',
-  format: 'Pakiet dotarł, ale serwer odrzucił jego format. Zapisz aktualny plik GSI i uruchom CS2 ponownie.',
-  size: 'Pakiet GSI przekroczył limit rozmiaru. Zapisz aktualny plik WebRadar i uruchom CS2 ponownie.',
-  game: 'Serwer odebrał pakiet innej gry. Sprawdź adres GSI dla CS2.',
-};
+const sharingControls = desktop ?? api;
 const tokenKey = 'cs2-webradar:view-token';
 const staleAfter = 40_000;
 const allowedImageTypes = new Set(['image/png', 'image/jpeg', 'image/webp']);
@@ -60,11 +49,57 @@ let boundsDirty = false;
 let grenadeTrails = new Map();
 let trailMatch;
 let trailStamp;
-let setupState;
-let receiver;
-let receiverBusy = false;
-let setupBusy = false;
 let viewOnly = false;
+let canCapture = false;
+let localCapture = false;
+let localFrame;
+let remoteFrame;
+let remoteAt = 0;
+let remoteGeneration = 0;
+
+const hud = createHudCapture({
+  desktop, api,
+  canShare: () => Boolean(shareInfo?.link),
+  onState(active, error) {
+    localCapture = active;
+    if (!active) localFrame = null;
+    $('captureFeedback').hidden = !error;
+    text('captureFeedback', error || '');
+    render();
+  },
+  onFrame(frame) {
+    localFrame = frame;
+    if (localCapture && demoStarted === null) drawCapture(frame);
+  },
+});
+
+function drawCapture(frame) {
+  radar.draw({
+    image: frame, players: [], utility: [], bounds: currentBounds(), names: false,
+    markerScale: 1, follow: false, stamp: 0, space: 'capture',
+  });
+}
+
+function clearRemoteCapture() {
+  remoteGeneration += 1;
+  remoteFrame?.release();
+  remoteFrame = null;
+  remoteAt = 0;
+}
+
+async function readRemoteCapture(data, connectionSocket) {
+  const generation = ++remoteGeneration;
+  try {
+    const decoded = await decodeImage(data.slice(0, data.size, 'image/jpeg'));
+    if (generation !== remoteGeneration || socket !== connectionSocket) return decoded.release();
+    remoteFrame?.release();
+    remoteFrame = decoded;
+    remoteAt = performance.now();
+    render();
+  } catch {
+    // Continue with the next frame when a browser cannot decode a packet.
+  }
+}
 
 function text(id, value) {
   const node = $(id);
@@ -202,11 +237,6 @@ function refreshMap() {
   if (![...picker.options].some(option => option.value === selectedMap)) picker.add(new Option(nameForMap(selectedMap), selectedMap));
   picker.value = selectedMap;
   $('autoMap').setAttribute('aria-pressed', String(autoMap));
-  text('map', nameForMap(selectedMap));
-  const mode = autoMap ? 'Mapa automatyczna' : 'Wybór ręczny';
-  const floor = lowerBelow === undefined ? '' : (level === 'lower' ? ' · dolny poziom' : ' · górny poziom');
-  text('mapMode', mode + floor);
-
   const key = `${selectedMap}:${level}`;
   if (key === activeKey) return;
   activeKey = key;
@@ -247,9 +277,11 @@ function prettyWeapon(value) {
 function showRoster(active, player) {
   $('teamPanel').hidden = !active.observer;
   $('clearPlayer').hidden = !focusId;
+  const query = $('rosterFilter').value.trim().toLowerCase();
   const groups = ['CT', 'T', ''].map(team => ({
     team,
-    players: (active.observer ? active.roster || [] : []).filter(player => player.team === team)
+    players: (active.observer ? active.roster || [] : []).filter(player =>
+      player.team === team && (!query || player.name.toLowerCase().includes(query)))
       .sort((a, b) => ((a.observerSlot ?? 99) - (b.observerSlot ?? 99)) || a.name.localeCompare(b.name)),
   })).filter(group => group.players.length);
   const key = groups.map(group => group.team + group.players.map(player => player.id).join(',')).join('|');
@@ -335,6 +367,9 @@ function recordGrenadeTrails(snapshot) {
 function render() {
   const demo = demoStarted !== null;
   const bounds = currentBounds();
+  if (remoteFrame && performance.now() - remoteAt > 5000) clearRemoteCapture();
+  const captureMode = !demo && (localCapture || remoteFrame);
+  const displayedFrame = localCapture ? localFrame : remoteFrame?.element;
   const active = demo ? demoState(selectedMap, bounds, (performance.now() - demoStarted) / 1000) : live;
   const age = serverAge + performance.now() - receivedAt;
   const stale = age > staleAfter;
@@ -366,19 +401,37 @@ function render() {
   const authNeeded = ['token', 'denied'].includes(connection);
 
   if (demo) setStatus('demo', 'Tryb demonstracyjny');
+  else if (captureMode) setStatus('live', 'Minimapa na żywo');
   else if (connection === 'token') setStatus('waiting', 'Podaj token podglądu');
   else if (connection === 'denied') setStatus('offline', 'Nieprawidłowy token podglądu');
   else if (connection !== 'open') setStatus('offline', connection === 'connecting' ? 'Łączenie z radarem…' : 'Ponawiam połączenie…');
-  else if (!live.updated) setStatus('waiting', 'Oczekiwanie na CS2');
+  else if (!live.updated) setStatus('ready', viewOnly ? 'Oczekiwanie na hosta' : 'Gotowy do podglądu');
   else if (stale) setStatus('waiting', 'Brak nowych danych z CS2');
   else setStatus('live', 'Połączono z CS2');
 
+  const mode = autoMap ? 'Mapa automatyczna' : 'Wybór ręczny';
+  const floor = lowerBelow === undefined ? '' : (level === 'lower' ? ' · dolny poziom' : ' · górny poziom');
+  text('map', captureMode ? 'Minimapa CS2' : nameForMap(selectedMap));
+  text('mapMode', captureMode ? 'Podgląd wybranego kadru' : mode + floor);
+  text('railMode', captureMode ? 'Przechwytywanie' : demo ? 'Tryb demo' : live.updated ? 'Telemetria GSI' : 'Podgląd gotowy');
+  text('capture', localCapture ? 'Zmień kadr' : 'Przechwyć okno');
+  $('capture').hidden = !canCapture;
+  $('goCapture').hidden = !canCapture;
+  $('stopCapture').hidden = !localCapture;
+  $('mapField').hidden = Boolean(captureMode);
+  $('autoMap').hidden = Boolean(captureMode);
+  $('levelWrap').hidden = Boolean(captureMode) || lowerBelow === undefined;
+  $('radarLegend').hidden = Boolean(captureMode);
   $('demoTag').hidden = !demo;
-  $('sourceTag').hidden = demo || !live.updated;
-  text('sourceTag', active.observer ? 'Obserwator · obie drużyny' : 'Telemetria gracza');
+  $('sourceTag').hidden = demo || (!live.updated && !captureMode);
+  text('sourceTag', captureMode ? 'Obraz gry' : active.observer ? 'Obserwator · obie drużyny' : 'Telemetria gracza');
+  text('imageMode', captureMode ? 'Na żywo' : image ? 'Grafika mapy' : 'Siatka współrzędnych');
   if (!demo && fresh && !active.observer && visiblePlayers.length === 0 && !point) $('sourceTag').dataset.limited = 'true';
   else delete $('sourceTag').dataset.limited;
-  $('center').disabled = !showMarker;
+  $('center').disabled = Boolean(captureMode) || !showMarker;
+  $('telemetryFields').hidden = !demo && !live.updated;
+  $('telemetryText').hidden = !$('telemetryFields').hidden;
+  text('telemetryText', captureMode ? 'Wyświetlasz obraz minimapy z okna gry.' : 'Dane gracza pojawią się ze strumienia GSI lub w trybie demo.');
   const elapsed = Math.max(0, Math.floor(age / 1000));
   text('lastUpdate', demo ? 'Przykład' : live.updated ? (elapsed < 1 ? 'Teraz' : `${elapsed} s temu`) : dash);
   text('ctScore', String(active.score?.ct ?? dash));
@@ -416,14 +469,12 @@ function render() {
   text('playerUtility', loadout.join(' · '));
   showRoster(active, player);
 
-  const waiting = !demo && !authNeeded && !live.updated && connection === 'open';
-  $('gsiWaiting').hidden = !waiting;
-  $('waitingSetup').hidden = viewOnly;
-  if (waiting) text('gsiWaitingMessage', waitingMessage());
   let hint = '';
-  if (!demo && authNeeded) hint = 'Wpisz token w sekcji Dostęp LAN.';
-  else if (waiting) hint = '';
-  else if (!demo && !live.updated) hint = 'Łączę się z lokalnym serwerem radaru.';
+  if (captureMode) hint = '';
+  else if (!demo && authNeeded) hint = 'Wpisz token w sekcji Dostęp LAN.';
+  else if (!demo && !live.updated && viewOnly) hint = 'Host może udostępnić kadr z minimapy albo strumień telemetrii.';
+  else if (!demo && !live.updated) hint = canCapture ? 'Wybierz „Przechwyć okno”, aby pokazać minimapę z CS2.'
+    : 'Otwórz radar na komputerze z grą, aby przechwycić minimapę.';
   else if (!demo && live.map === 'unknown') hint = 'Serwer odbiera dane. Wejdź do meczu, aby CS2 wysłało stan mapy.';
   else if (!fresh) hint = 'Pozycja pojawi się po nadejściu nowych danych.';
   else if (!correctMap && mapId(active.map)) hint = `CS2 zgłasza mapę ${nameForMap(mapId(active.map))}.`;
@@ -432,6 +483,7 @@ function render() {
   else if (point && !onMap(point)) hint = 'Pozycja poza granicami mapy. Sprawdź kalibrację.';
   $('radarHint').hidden = !hint;
   text('radarHint', hint);
+  if (captureMode && displayedFrame) return drawCapture(displayedFrame);
   radar.draw({ image: image?.element, players: visiblePlayers, utility: visibleUtility, bounds, focusId: player?.id,
     names: $('names').checked, markerScale: $('markerScale').valueAsNumber, follow: $('follow').checked,
     stamp: demo ? performance.now() : active.updated,
@@ -471,8 +523,17 @@ function connect() {
   };
   current.onmessage = event => {
     if (socket !== current) return;
+    if (event.data instanceof Blob) {
+      if (viewOnly) void readRemoteCapture(event.data, current);
+      return;
+    }
     try {
       const incoming = JSON.parse(event.data);
+      if (incoming?.type === 'capture-ended') {
+        clearRemoteCapture();
+        render();
+        return;
+      }
       if (!incoming || !Array.isArray(incoming.players)) return;
       recordGrenadeTrails(incoming);
       live = { ...incoming, player: incoming.player ?? incoming.players[0] };
@@ -487,6 +548,7 @@ function connect() {
   current.onclose = async () => {
     if (socket !== current) return;
     connection = 'offline';
+    clearRemoteCapture();
     render();
     if (viewTokenRequired) {
       try {
@@ -514,8 +576,8 @@ async function initializeConnection() {
     viewTokenRequired = Boolean(reply.viewTokenRequired);
     $('lanSettings').hidden = !viewTokenRequired;
     viewOnly = Boolean(reply.viewOnly);
+    canCapture = Boolean(reply.captureAvailable);
     if (viewOnly) {
-      $('setup').hidden = true;
       mapAccess = 'viewer';
       $('mapFileWrap').hidden = true;
       $('calActions').hidden = true;
@@ -524,49 +586,14 @@ async function initializeConnection() {
     } else if (reply.manageMaps) {
       mapAccess = 'host';
       $('share').hidden = false;
+      $('goShare').hidden = false;
+      void sharingControls.shareStatus().then(showSharing).catch(() => {});
     }
     if (mapAccess === 'host') void loadMapImage();
-    void showReceiverStatus(reply);
   } catch {
-    $('lanSettings').hidden = Boolean(setup);
+    $('lanSettings').hidden = Boolean(desktop);
   }
   connect();
-}
-
-function updateSetup(value) {
-  if (!value) return;
-  setupState = value;
-  text('setupMessage', value.message);
-  text('setupPath', value.path || '');
-  $('setupPath').hidden = !value.path;
-  text('setupDetail', value.detail || '');
-  $('setupDetail').hidden = !value.detail;
-  $('replace').hidden = value.state !== 'conflict';
-  $('webReplace').hidden = value.state !== 'conflict';
-  render();
-}
-
-async function setupAction(action) {
-  if (setupBusy) return;
-  setupBusy = true;
-  const buttons = $('setupDialog').querySelectorAll('[data-gsi]');
-  buttons.forEach(button => { button.disabled = true; });
-  text('setupFeedback', '');
-  if (action === 'detect') text('setupMessage', 'Szukam folderu Counter-Strike 2 w Steam…');
-  try {
-    const result = await setupControls[action]();
-    if (action === 'save') {
-      if (result.saved) text('setupFeedback', `Zapisano ${result.path}. Skopiuj plik do game/csgo/cfg i uruchom CS2 ponownie.`);
-    } else {
-      updateSetup(result);
-      if (result?.backup && action === 'replace') text('setupFeedback', `Kopia: ${result.backup}`);
-    }
-  } catch {
-    text('setupFeedback', 'Operacja się nie powiodła. Pobierz plik lub wybierz inny folder.');
-  } finally {
-    setupBusy = false;
-    buttons.forEach(button => { button.disabled = false; });
-  }
 }
 
 for (const [id, map] of maps) $('mapSelect').add(new Option(map.name, id));
@@ -594,6 +621,7 @@ $('reset').addEventListener('click', radar.reset);
 $('center').addEventListener('click', radar.center);
 
 $('demo').addEventListener('click', () => {
+  if (localCapture) hud.stop();
   focusId = undefined;
   demoStarted = demoStarted === null ? performance.now() : null;
   const demo = demoStarted !== null;
@@ -735,71 +763,27 @@ $('authForm').addEventListener('submit', event => {
   connect();
 });
 
-$('setupAddress').textContent = `http://127.0.0.1:${location.port || '80'}/gsi`;
-$('desktopSetup').hidden = !setup;
-$('browserSetup').hidden = Boolean(setup);
-if (setup) {
-  for (const [button, action] of [['detect', 'detect'], ['choose', 'choose'], ['replace', 'replace'], ['saveConfig', 'save']]) {
-    $(button).addEventListener('click', () => setupAction(action));
-  }
-}
-$('webDetect').addEventListener('click', () => void setupAction('detect'));
-$('webReplace').addEventListener('click', () => void setupAction('replace'));
-$('gameFolderForm').addEventListener('submit', event => {
-  event.preventDefault();
-  void setupAction('choose');
+$('capture').addEventListener('click', () => {
+  demoStarted = null;
+  $('demo').setAttribute('aria-pressed', 'false');
+  text('demo', 'Tryb demo');
+  $('captureFeedback').hidden = true;
+  void hud.open();
+  render();
 });
-
-function activeRejection() {
-  const recent = receiver?.rejection;
-  return recent && recent.at > (live.updated || 0) && Date.now() - recent.at < 45_000
-    ? gsiRejections[recent.reason] : '';
+$('stopCapture').addEventListener('click', hud.stop);
+$('goCapture').addEventListener('click', () => $('capture').click());
+$('goShare').addEventListener('click', () => $('share').click());
+$('rosterFilter').addEventListener('input', render);
+for (const [button, target] of [['goRadar', 'dashboard'], ['goTelemetry', 'telemetryPanel'], ['goMap', 'mapSettings'], ['goView', 'viewSettings']]) {
+  $(button).addEventListener('click', () => {
+    const panel = $(target);
+    if (panel instanceof HTMLDetailsElement) panel.open = true;
+    panel.scrollIntoView({ block: 'nearest' });
+    document.querySelector('.rail-entry.current')?.classList.remove('current');
+    $(button).classList.add('current');
+  });
 }
-
-function waitingMessage() {
-  if (viewOnly) return 'Host czeka na dane z CS2.';
-  return activeRejection() || setupState?.message
-    || (receiver?.setupAvailable ? 'Sprawdzam plik GSI w katalogu Steam.' : 'Wgraj plik GSI w sekcji konfiguracji i uruchom CS2 ponownie.');
-}
-
-async function showReceiverStatus(health) {
-  if (receiverBusy || viewOnly) return;
-  receiverBusy = true;
-  try {
-    const info = health ?? await (await fetch('/health', { signal: AbortSignal.timeout(2500) })).json();
-    receiver = info.receiver;
-    if (!receiver) return;
-    $('webSetupControls').hidden = !receiver.setupAvailable;
-    if (receiver.setupAvailable && !setupBusy) {
-      const read = setup ? setup.status : api.gsiStatus;
-      const current = await read();
-      if (!setupBusy) updateSetup(current);
-    } else if (!setupState) {
-      text('setupMessage', 'Zapisz plik GSI w folderze CS2 i uruchom grę ponownie.');
-    }
-    const updated = info.updated || 0;
-    const age = Date.now() - updated;
-    let message = 'Serwer czeka na pierwszy pakiet z gry.';
-    if (updated && age > staleAfter) message = 'Ostatni pakiet z gry dotarł wcześniej. Sprawdź aktywną instancję CS2.';
-    else if (updated && receiver.observer) message = `Odebrano dane obserwatora · pozycje: ${receiver.positions}`;
-    else if (updated && receiver.positions) message = 'Odebrano pozycję i telemetrię gracza.';
-    else if (updated) message = 'Odebrano pakiet CS2. Wejdź do meczu, aby otrzymać stan mapy.';
-    text('receiverStatus', activeRejection() || message);
-    render();
-  } catch {
-    text('receiverStatus', 'Sprawdzanie połączenia z lokalnym serwerem…');
-  } finally {
-    receiverBusy = false;
-  }
-}
-
-function openSetup() {
-  $('setupDialog').showModal();
-  void showReceiverStatus();
-}
-$('setup').addEventListener('click', openSetup);
-$('waitingSetup').addEventListener('click', openSetup);
-$('closeSetup').addEventListener('click', () => $('setupDialog').close());
 
 function showSharing(info) {
   shareInfo = info;
@@ -824,8 +808,8 @@ async function shareAction(action) {
   text('shareFeedback', '');
   try {
     if (action === 'shareCopy') {
-      if (setup) {
-        if (await setup.shareCopy()) text('shareFeedback', 'Skopiowano link.');
+      if (desktop) {
+        if (await desktop.shareCopy()) text('shareFeedback', 'Skopiowano link.');
       } else {
         try {
           await navigator.clipboard.writeText(shareInfo.link);
@@ -869,8 +853,5 @@ refreshMap();
 void initializeConnection();
 render();
 setInterval(render, 1000);
-setInterval(() => {
-  void syncSharedMap();
-  if (!live.updated || $('setupDialog').open) void showReceiverStatus();
-}, 2500);
+setInterval(() => void syncSharedMap(), 2500);
 setInterval(() => { if (demoStarted !== null) render(); }, 100);

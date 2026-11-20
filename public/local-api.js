@@ -27,10 +27,10 @@ function createLocalApi(readToken) {
     removeImage: key => request(`${mapRoute(key)}/image`, { method: 'DELETE' }),
     saveBounds: (key, bounds) => putJson(`${mapRoute(key)}/bounds`, bounds),
     resetBounds: key => request(`${mapRoute(key)}/bounds`, { method: 'DELETE' }),
-    gsiStatus: async () => (await request('/api/gsi-setup')).json(),
-    configureGsi: async (action, directory) => (await request('/api/gsi-setup', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, directory }),
-    })).json(),
+    sendCapture: frame => request('/api/capture/frame', {
+      method: 'PUT', headers: { 'Content-Type': 'image/jpeg' }, body: frame, signal: AbortSignal.timeout(1200),
+    }),
+    clearCapture: () => request('/api/capture/frame', { method: 'DELETE', keepalive: true }),
     shareStatus: async () => (await request('/api/share')).json(),
     shareStart: async ip => (await putJson('/api/share', { ip })).json(),
     shareStop: async () => (await request('/api/share', { method: 'DELETE' })).json(),
