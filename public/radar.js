@@ -288,12 +288,12 @@ export function createRadar(canvas, onZoom, onSelect) {
   }).observe(canvas);
 
   return {
-    draw({ image, players, utility, bounds, focusId, names, markerScale, follow, stamp, space }) {
+    draw({ image, players, utility, bounds, focusId, names, markerScale, follow, stamp, space, interpolate = true }) {
       const projected = players.map(player => ({ player, point: project(player, bounds) })).filter(entry => onMap(entry.point));
       projected.sort((a, b) => Number(a.player.id === focusId) - Number(b.player.id === focusId));
       const now = performance.now();
       const delay = stamp - frame.stamp;
-      if (frame.space !== space || reducedMotion.matches || !projected.length) {
+      if (!interpolate || frame.space !== space || reducedMotion.matches || !projected.length) {
         motion = null;
       } else if (stamp !== frame.stamp) {
         const previous = new Map(visualPlayers(now).map(entry => [entry.player.id, entry]));

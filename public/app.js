@@ -509,6 +509,7 @@ function render() {
   if (captureMode && displayedFrame) return drawCapture(displayedFrame);
   radar.draw({ image: image?.element, players: visiblePlayers, utility: visibleUtility, bounds, focusId: player?.id,
     names: $('names').checked, markerScale: $('markerScale').valueAsNumber, follow: $('follow').checked,
+    interpolate: demo || active.source !== 'cstv',
     stamp: demo ? performance.now() : active.updated,
     space: `${demo ? 'demo' : active.source}:${active.round}:${activeKey}:${boundsFields.map(field => bounds[field]).join(',')}`,
   });

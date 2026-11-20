@@ -49,7 +49,7 @@ test('an HTTP CSTV source selects its own map and publishes observer positions t
       }));
     } else if (req.url === '/match/0/start') res.end();
     else if (req.url === '/match/1/full') res.end(tickFrame(65));
-    else if (req.url === '/match/1/delta') res.end(tickFrame(73));
+    else if (req.url === '/match/1/delta') res.end(Buffer.concat([tickFrame(73), tickFrame(81), tickFrame(89)]));
     else {
       res.statusCode = 404;
       res.end();
@@ -87,6 +87,8 @@ test('an HTTP CSTV source selects its own map and publishes observer positions t
   const state = await waitForState(base, state => state.broadcast === 'live');
   assert.equal(state.source, 'cstv');
   assert.equal(state.map, 'de_nuke');
+  assert.equal(state.tick, 81);
+  assert.equal((await received).tick, 81);
   assert.deepEqual(state.score, { ct: 6, t: 4 });
   assert.deepEqual(state.players.map(({ team, x, y, z, hp }) => [team, x, y, z, hp]), [
     ['CT', -1500, 500, -450, 87],

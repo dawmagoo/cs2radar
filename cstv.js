@@ -1,10 +1,7 @@
 'use strict';
 
-const { setTimeout: sleep } = require('node:timers/promises');
 const { readState } = require('./telemetry');
 
-const frameInterval = 125;
-const bufferFrames = 40;
 const maxFragmentBytes = 8 * 1024 * 1024;
 const teamNames = { 2: 'T', 3: 'CT' };
 
@@ -129,44 +126,34 @@ async function readBroadcast(relay, signal, publish) {
   if (signal.aborted) return 'cancelled';
 
   const parser = new DemoReader();
-  const frames = [];
   let map = '';
-  let step = 8;
-  let lastTick = -Infinity;
-  parser.on('broadcastsync', sync => {
-    step = Math.min(128, Math.max(1, Math.round(sync.tps * frameInterval / 1000)));
-    map = matchMap(sync.map);
-  });
+  let pending;
+  let scheduled = false;
+  parser.on('broadcastsync', sync => { map = matchMap(sync.map); });
   parser.on('serverinfo', info => {
     const name = matchMap(info.map_name);
     if (name && name !== map) {
-      frames.length = 0;
-      lastTick = -Infinity;
+      pending = undefined;
       map = name;
     }
   });
   parser.on('tickend', tick => {
-    if (!map || tick < 0 || tick - lastTick < step) return;
-    lastTick = tick;
-    if (frames.length >= bufferFrames) frames.shift();
-    frames.push(broadcastState(parser, map));
-  });
-  const playFrame = () => {
-    const frame = frames.shift();
-    if (frame) publish({ ...frame, source: 'cstv', broadcast: 'live', updated: Date.now() });
-  };
-  const timer = setInterval(playFrame, frameInterval).unref();
-  try {
-    const result = await parser.parseHttpBroadcast(relay.href, {
-      entities: EntityMode.ALL, fetcher: relayFetcher(relay), signal,
+    if (!map || tick < 0 || signal.aborted) return;
+    pending = { ...broadcastState(parser, map), tick };
+    if (scheduled) return;
+    scheduled = true;
+    queueMicrotask(() => {
+      scheduled = false;
+      if (pending && !signal.aborted) {
+        publish({ ...pending, source: 'cstv', broadcast: 'live', updated: Date.now() });
+      }
+      pending = undefined;
     });
-    while (result.status === 'complete' && frames.length && !signal.aborted) {
-      await sleep(frameInterval, undefined, { signal });
-    }
-    return result.status;
-  } finally {
-    clearInterval(timer);
-  }
+  });
+  const result = await parser.parseHttpBroadcast(relay.href, {
+    entities: EntityMode.ALL, fetcher: relayFetcher(relay), signal,
+  });
+  return result.status;
 }
 
 function createCstvSource(publish, restore) {
