@@ -1,0 +1,65 @@
+{
+  "name": "cs2-webradar",
+  "version": "1.5.0",
+  "private": true,
+  "description": "Lokalny radar i podgląd telemetrii CS2 Game State Integration",
+  "main": "electron-main.js",
+  "scripts": {
+    "start": "node server.js",
+    "desktop": "electron .",
+    "test": "node --test",
+    "dist:win": "electron-builder --win nsis --x64",
+    "dist:win:portable": "electron-builder --win portable --x64"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "express": "4.22.3",
+    "ws": "8.23.0"
+  },
+  "devDependencies": {
+    "electron": "45.4.1",
+    "electron-builder": "26.18.0"
+  },
+  "build": {
+    "appId": "pl.cs2webradar.desktop",
+    "productName": "CS2 WebRadar",
+    "artifactName": "CS2-WebRadar-${version}-${arch}.${ext}",
+    "asar": true,
+    "files": [
+      "electron-main.js",
+      "preload.js",
+      "steam.js",
+      "server.js",
+      "telemetry.js",
+      "gamestate_integration_webradar.cfg",
+      "public/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "artifactName": "CS2-WebRadar-Setup-${version}-${arch}.${ext}",
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "installerLanguages": [
+        "pl_PL",
+        "en_US"
+      ]
+    },
+    "portable": {
+      "artifactName": "CS2-WebRadar-Portable-${version}-${arch}.${ext}"
+    },
+    "toolsets": {
+      "wine": "1.0.1",
+      "nsis": "1.2.1"
+    }
+  }
+}
