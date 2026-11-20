@@ -17,6 +17,13 @@ const allowedImageTypes = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const phases = { live: 'w toku', freezetime: 'zakupy', over: 'koniec rundy', warmup: 'rozgrzewka', gameover: 'koniec meczu', bomb: 'podłożona bomba', defuse: 'rozbrajanie', paused: 'pauza', halftime: 'przerwa' };
 const bombs = { carried: 'Bomba niesiona', dropped: 'Bomba na ziemi', planting: 'Podkładanie bomby', planted: 'Bomba podłożona', defusing: 'Rozbrajanie bomby', defused: 'Bomba rozbrojona', exploded: 'Bomba eksplodowała' };
 const equipmentNames = { smokegrenade: 'Dym', flashbang: 'Flash', hegrenade: 'HE', molotov: 'Mołotow', incgrenade: 'Zapalający', decoy: 'Wabik' };
+const cstvStatuses = {
+  connecting: ['waiting', 'Łączenie z CSTV…'],
+  live: ['live', 'Transmisja CSTV'],
+  offline: ['waiting', 'Brak nowych fragmentów CSTV'],
+  ended: ['ready', 'Transmisja CSTV zakończona'],
+  error: ['offline', 'Nie udało się odczytać transmisji CSTV'],
+};
 const viewControls = ['teamFilter', 'markerScale', 'names', 'utility', 'trails', 'follow'];
 const moneyFormat = new Intl.NumberFormat('pl-PL');
 const radar = createRadar($('radar'), zoom => { $('zoomLabel').value = `${Math.round(zoom * 100)}%`; }, focusPlayer);
@@ -51,6 +58,7 @@ let trailMatch;
 let trailStamp;
 let viewOnly = false;
 let canCapture = false;
+let cstvFeedback = '';
 let localCapture = false;
 let localFrame;
 let remoteFrame;
@@ -368,7 +376,8 @@ function render() {
   const demo = demoStarted !== null;
   const bounds = currentBounds();
   if (remoteFrame && performance.now() - remoteAt > 5000) clearRemoteCapture();
-  const captureMode = !demo && (localCapture || remoteFrame);
+  const fromCstv = live.source === 'cstv';
+  const captureMode = !demo && (localCapture || (!fromCstv && remoteFrame));
   const displayedFrame = localCapture ? localFrame : remoteFrame?.element;
   const active = demo ? demoState(selectedMap, bounds, (performance.now() - demoStarted) / 1000) : live;
   const age = serverAge + performance.now() - receivedAt;
@@ -376,7 +385,8 @@ function render() {
   const fresh = demo || (connection === 'open' && !stale);
   const player = selectedPlayer(active);
   const point = project(player, bounds);
-  const correctMap = mapId(active.map) === selectedMap;
+  const matchMap = mapId(active.map);
+  const correctMap = matchMap === selectedMap;
   const lowerBelow = maps.get(selectedMap)?.lowerBelow;
   const onLevel = item => demo || !Number.isFinite(item?.z) || lowerBelow === undefined
     || (item.z < lowerBelow ? 'lower' : 'upper') === level;
@@ -399,21 +409,28 @@ function render() {
   }
   const showMarker = visiblePlayers.some(item => item.id === player?.id && onMap(project(item, bounds)));
   const authNeeded = ['token', 'denied'].includes(connection);
+  const cstvStatus = fromCstv
+    ? cstvStatuses[live.broadcast === 'live' && stale ? 'offline' : live.broadcast] ?? cstvStatuses.connecting : null;
 
   if (demo) setStatus('demo', 'Tryb demonstracyjny');
   else if (captureMode) setStatus('live', 'Minimapa na żywo');
   else if (connection === 'token') setStatus('waiting', 'Podaj token podglądu');
   else if (connection === 'denied') setStatus('offline', 'Nieprawidłowy token podglądu');
   else if (connection !== 'open') setStatus('offline', connection === 'connecting' ? 'Łączenie z radarem…' : 'Ponawiam połączenie…');
+  else if (cstvStatus) setStatus(...cstvStatus);
   else if (!live.updated) setStatus('ready', viewOnly ? 'Oczekiwanie na hosta' : 'Gotowy do podglądu');
-  else if (stale) setStatus('waiting', 'Brak nowych danych z CS2');
-  else setStatus('live', 'Połączono z CS2');
+  else if (stale) setStatus('waiting', 'Brak nowych danych GSI');
+  else setStatus('live', 'Telemetria GSI');
 
-  const mode = autoMap ? 'Mapa automatyczna' : 'Wybór ręczny';
+  const source = fromCstv ? 'CSTV' : 'GSI';
+  const mode = !matchMap ? 'Tło podglądu · mapa meczu nieznana'
+    : demo ? 'Mapa demonstracyjna'
+      : autoMap ? `Mapa z ${source}` : `Tło wybrane ręcznie · mecz: ${nameForMap(matchMap)}`;
   const floor = lowerBelow === undefined ? '' : (level === 'lower' ? ' · dolny poziom' : ' · górny poziom');
   text('map', captureMode ? 'Minimapa CS2' : nameForMap(selectedMap));
   text('mapMode', captureMode ? 'Podgląd wybranego kadru' : mode + floor);
-  text('railMode', captureMode ? 'Przechwytywanie' : demo ? 'Tryb demo' : live.updated ? 'Telemetria GSI' : 'Podgląd gotowy');
+  text('railMode', captureMode ? 'Przechwytywanie' : demo ? 'Tryb demo' : fromCstv ? 'Transmisja CSTV'
+    : live.updated ? 'Telemetria GSI' : 'Podgląd gotowy');
   text('capture', localCapture ? 'Zmień kadr' : 'Przechwyć okno');
   $('capture').hidden = !canCapture;
   $('goCapture').hidden = !canCapture;
@@ -422,16 +439,21 @@ function render() {
   $('autoMap').hidden = Boolean(captureMode);
   $('levelWrap').hidden = Boolean(captureMode) || lowerBelow === undefined;
   $('radarLegend').hidden = Boolean(captureMode);
+  text('watchCstv', fromCstv ? 'Źródło CSTV' : 'Transmisja CSTV');
   $('demoTag').hidden = !demo;
-  $('sourceTag').hidden = demo || (!live.updated && !captureMode);
-  text('sourceTag', captureMode ? 'Obraz gry' : active.observer ? 'Obserwator · obie drużyny' : 'Telemetria gracza');
+  $('sourceTag').hidden = demo || (!captureMode && (!fresh || !live.updated));
+  const positionCount = team => (active.players || []).filter(item => item.team === team && item.hp !== 0).length;
+  text('sourceTag', captureMode ? 'Obraz gry' : `${source} · pozycje CT ${positionCount('CT')} / T ${positionCount('T')}`);
   text('imageMode', captureMode ? 'Na żywo' : image ? 'Grafika mapy' : 'Siatka współrzędnych');
   if (!demo && fresh && !active.observer && visiblePlayers.length === 0 && !point) $('sourceTag').dataset.limited = 'true';
   else delete $('sourceTag').dataset.limited;
   $('center').disabled = Boolean(captureMode) || !showMarker;
-  $('telemetryFields').hidden = !demo && !live.updated;
+  $('stopCstv').hidden = !fromCstv;
+  text('cstvState', cstvFeedback || cstvStatus?.[1] || '');
+  $('telemetryFields').hidden = Boolean(captureMode || (!demo && !live.updated));
   $('telemetryText').hidden = !$('telemetryFields').hidden;
-  text('telemetryText', captureMode ? 'Wyświetlasz obraz minimapy z okna gry.' : 'Dane gracza pojawią się ze strumienia GSI lub w trybie demo.');
+  text('telemetryText', captureMode ? 'Wyświetlasz obraz minimapy z okna gry.' : cstvStatus?.[1]
+    || (viewOnly ? 'Dane pojawią się po połączeniu hosta ze źródłem meczu.' : 'Połącz transmisję CSTV, aby zobaczyć telemetrię obserwatora.'));
   const elapsed = Math.max(0, Math.floor(age / 1000));
   text('lastUpdate', demo ? 'Przykład' : live.updated ? (elapsed < 1 ? 'Teraz' : `${elapsed} s temu`) : dash);
   text('ctScore', String(active.score?.ct ?? dash));
@@ -467,18 +489,19 @@ function render() {
   if (player?.defuse) loadout.push('Zestaw do rozbrajania');
   $('utilityPanel').hidden = loadout.length === 0;
   text('playerUtility', loadout.join(' · '));
-  showRoster(active, player);
+  showRoster(captureMode ? {} : active, player);
 
   let hint = '';
   if (captureMode) hint = '';
   else if (!demo && authNeeded) hint = 'Wpisz token w sekcji Dostęp LAN.';
+  else if (!demo && fromCstv && live.broadcast === 'error') hint = 'Sprawdź adres CSTV HTTP udostępniony przez organizatora.';
+  else if (!demo && fromCstv && !live.updated) hint = cstvStatus[1];
   else if (!demo && !live.updated && viewOnly) hint = 'Host może udostępnić kadr z minimapy albo strumień telemetrii.';
-  else if (!demo && !live.updated) hint = canCapture ? 'Wybierz „Przechwyć okno”, aby pokazać minimapę z CS2.'
-    : 'Otwórz radar na komputerze z grą, aby przechwycić minimapę.';
+  else if (!demo && !live.updated) hint = 'Pozycje CT i T pojawią się po podłączeniu danych obserwatora.';
   else if (!demo && live.map === 'unknown') hint = 'Serwer odbiera dane. Wejdź do meczu, aby CS2 wysłało stan mapy.';
   else if (!fresh) hint = 'Pozycja pojawi się po nadejściu nowych danych.';
-  else if (!correctMap && mapId(active.map)) hint = `CS2 zgłasza mapę ${nameForMap(mapId(active.map))}.`;
-  else if (!visiblePlayers.length && !point) hint = 'CS2 nie udostępnia pozycji w tym widoku. Użyj widoku obserwatora, aby zobaczyć pozycje drużyn.';
+  else if (!correctMap && matchMap) hint = `${source} zgłasza mapę ${nameForMap(matchMap)}.`;
+  else if (!visiblePlayers.length && !point) hint = 'W odebranych danych brakuje pozycji dla tego widoku.';
   else if (!onLevel(player)) hint = 'Wybrany gracz jest na innym poziomie.';
   else if (point && !onMap(point)) hint = 'Pozycja poza granicami mapy. Sprawdź kalibrację.';
   $('radarHint').hidden = !hint;
@@ -487,7 +510,7 @@ function render() {
   radar.draw({ image: image?.element, players: visiblePlayers, utility: visibleUtility, bounds, focusId: player?.id,
     names: $('names').checked, markerScale: $('markerScale').valueAsNumber, follow: $('follow').checked,
     stamp: demo ? performance.now() : active.updated,
-    space: `${demo ? 'demo' : 'live'}:${active.round}:${activeKey}:${boundsFields.map(field => bounds[field]).join(',')}`,
+    space: `${demo ? 'demo' : active.source}:${active.round}:${activeKey}:${boundsFields.map(field => bounds[field]).join(',')}`,
   });
 }
 
@@ -577,6 +600,7 @@ async function initializeConnection() {
     $('lanSettings').hidden = !viewTokenRequired;
     viewOnly = Boolean(reply.viewOnly);
     canCapture = Boolean(reply.captureAvailable);
+    $('watchCstv').hidden = !reply.cstvAvailable;
     if (viewOnly) {
       mapAccess = 'viewer';
       $('mapFileWrap').hidden = true;
@@ -762,6 +786,42 @@ $('authForm').addEventListener('submit', event => {
   render();
   connect();
 });
+
+$('watchCstv').addEventListener('click', () => {
+  cstvFeedback = '';
+  render();
+  $('cstvDialog').showModal();
+});
+$('closeCstv').addEventListener('click', () => $('cstvDialog').close());
+
+async function switchCstv(connectSource) {
+  const start = $('startCstv');
+  const stop = $('stopCstv');
+  start.disabled = stop.disabled = true;
+  cstvFeedback = '';
+  try {
+    if (connectSource) {
+      await api.startCstv($('cstvUrl').value.trim());
+      if (localCapture) hud.stop();
+      if (demoStarted !== null) $('demo').click();
+      $('autoMap').click();
+    } else {
+      await api.stopCstv();
+    }
+    $('cstvDialog').close();
+  } catch (error) {
+    cstvFeedback = error.message === 'HTTP 400' ? 'Wpisz prawidłowy adres HTTP lub HTTPS.'
+      : 'Radar nie przyjął zmiany źródła. Spróbuj ponownie.';
+  } finally {
+    start.disabled = stop.disabled = false;
+    render();
+  }
+}
+$('cstvForm').addEventListener('submit', event => {
+  event.preventDefault();
+  void switchCstv(true);
+});
+$('stopCstv').addEventListener('click', () => void switchCstv(false));
 
 $('capture').addEventListener('click', () => {
   demoStarted = null;

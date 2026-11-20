@@ -27,6 +27,8 @@ function createLocalApi(readToken) {
     removeImage: key => request(`${mapRoute(key)}/image`, { method: 'DELETE' }),
     saveBounds: (key, bounds) => putJson(`${mapRoute(key)}/bounds`, bounds),
     resetBounds: key => request(`${mapRoute(key)}/bounds`, { method: 'DELETE' }),
+    startCstv: url => putJson('/api/cstv', { url }),
+    stopCstv: () => request('/api/cstv', { method: 'DELETE' }),
     sendCapture: frame => request('/api/capture/frame', {
       method: 'PUT', headers: { 'Content-Type': 'image/jpeg' }, body: frame, signal: AbortSignal.timeout(1200),
     }),

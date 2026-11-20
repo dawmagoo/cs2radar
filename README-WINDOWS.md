@@ -2,7 +2,7 @@
 
 W sklonowanym repozytorium uruchom `npm ci`, a potem `npm run desktop` albo `npm start`. Wersję przeglądarkową otwórz w Chrome lub Edge pod adresem z terminala.
 
-Włącz CS2, użyj **Przechwyć okno**, wskaż grę i zatwierdź obszar minimapy. W aplikacji możesz zmienić kadr albo zamknąć przechwytywanie. Więcej o kadrowaniu, podglądzie LAN i usunięciu starego pliku WebRadar znajdziesz w [instrukcji projektu](README.md).
+Wybierz **Transmisja CSTV** i wklej adres przekaźnika HTTP od organizatora, aby zobaczyć mapę i pozycje drużyn z transmisji obserwatora. Osobny przycisk **Przechwyć okno** pozwala zaznaczyć fragment minimapy wyświetlanej w grze. [Instrukcja projektu](README.md)
 
 ## Lokalna kompilacja
 

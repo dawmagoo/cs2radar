@@ -8,6 +8,7 @@ const express = require('express');
 const { WebSocket, WebSocketServer } = require('ws');
 const { version } = require('./package.json');
 const { isRecord, readState } = require('./telemetry');
+const { createCstvSource } = require('./cstv');
 const { createMapStore, imageType, mapKey, maxImageBytes } = require('./map-store');
 const { createLanSharing } = require('./lan-sharing');
 
@@ -97,6 +98,8 @@ function createRadarServer({
   let lastCaptureAt = 0;
   let attemptedAt = 0;
   let rejection = null;
+  let lastGsi = readState({});
+  const cstv = canManage ? createCstvSource(feed.publish, () => feed.publish(lastGsi)) : null;
 
   function rejectGsi(reason) {
     attemptedAt = Date.now();
@@ -156,6 +159,7 @@ function createRadarServer({
     res.json({
       ok: true, version, updated: state.updated, clients: wss.clients.size,
       viewTokenRequired: Boolean(viewToken), viewOnly: readOnly, manageMaps: canManage, captureAvailable: canManage,
+      cstvAvailable: Boolean(cstv),
       ...(canManage ? { receiver: {
         attemptedAt, rejection, positions: state.players.length, observer: state.observer,
         map: state.map,
@@ -182,6 +186,14 @@ function createRadarServer({
     res.json(await sharing.start(req.body?.ip));
   }));
   app.delete('/api/share', manage, asyncRoute(async (req, res) => res.json(await sharing.stop())));
+
+  app.put('/api/cstv', manage, express.json({ limit: '4kb', inflate: false }), (req, res) => {
+    res.sendStatus(cstv.start(req.body?.url) ? 202 : 400);
+  });
+  app.delete('/api/cstv', manage, (req, res) => {
+    cstv.stop();
+    res.sendStatus(204);
+  });
 
   function checkedMap(req, res, next) {
     res.locals.mapKey = mapKey(req.params.map, req.params.floor);
@@ -256,7 +268,8 @@ function createRadarServer({
     if (now - lastAccepted < 40) return res.sendStatus(202);
     lastAccepted = now;
     rejection = null;
-    feed.publish(readState(body, now));
+    lastGsi = readState(body, now);
+    if (!cstv?.active()) feed.publish(lastGsi);
     res.sendStatus(200);
   });
 
@@ -316,6 +329,7 @@ function createRadarServer({
     closing ??= Promise.all([sharing?.dispose(), new Promise(resolve => {
       clearInterval(heartbeat);
       unsubscribe();
+      cstv?.stop();
       for (const client of wss.clients) client.terminate();
       wss.close();
       server.close(resolve);

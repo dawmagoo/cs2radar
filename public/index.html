@@ -31,6 +31,7 @@
         <h1>Radar CS2</h1>
         <div class="actions">
           <span id="status" class="status" data-state="waiting" role="status">Łączenie z radarem…</span>
+          <button id="watchCstv" class="button primary" type="button" hidden>Transmisja CSTV</button>
           <button id="demo" class="button" type="button" aria-pressed="false">Tryb demo</button>
           <button id="share" class="button" type="button" hidden>Udostępnij LAN</button>
           <button id="capture" class="button dark" type="button" hidden>Przechwyć okno</button>
@@ -43,7 +44,7 @@
           <header class="section-header">
             <div class="map-heading">
               <h2 id="map">Mirage</h2>
-              <p id="mapMode" class="subtle">Mapa automatyczna</p>
+              <p id="mapMode" class="subtle">Tło podglądu</p>
             </div>
             <div class="actions map-controls">
               <label class="select-label" id="mapField">Mapa <select id="mapSelect"></select></label>
@@ -85,10 +86,10 @@
     <aside class="sidebar" aria-label="Dane i ustawienia radaru">
       <section class="panel telemetry-panel" id="telemetryPanel" aria-labelledby="telemetry-heading">
         <div class="panel-heading">
-          <h2 id="telemetry-heading">Telemetria GSI</h2>
+          <h2 id="telemetry-heading">Telemetria meczu</h2>
           <span id="lastUpdate" class="subtle">—</span>
         </div>
-        <p id="telemetryText" class="subtle">Dane gracza pojawią się ze strumienia GSI lub w trybie demo.</p>
+        <p id="telemetryText" class="subtle">Dane pojawią się po połączeniu ze źródłem meczu.</p>
         <div id="telemetryFields" hidden>
         <div class="scoreboard" aria-label="Wynik meczu">
           <div><span class="team-label ct">CT</span><strong id="ctScore">—</strong></div>
@@ -176,6 +177,22 @@
       </main>
     </div>
   </div>
+
+  <dialog id="cstvDialog" aria-labelledby="cstvTitle">
+    <div class="dialog-heading">
+      <h2 id="cstvTitle">Transmisja obserwatora CSTV</h2>
+      <button id="closeCstv" class="button icon-button" type="button" aria-label="Zamknij">×</button>
+    </div>
+    <p>Użyj adresu CSTV HTTP udostępnionego przez organizatora. Radar odtworzy mapę i pozycje z tej transmisji z jej opóźnieniem.</p>
+    <form id="cstvForm">
+      <label class="field">Adres transmisji CSTV HTTP <input id="cstvUrl" type="url" maxlength="2048" autocomplete="off" required></label>
+      <div class="actions">
+        <button id="startCstv" class="button primary" type="submit">Połącz z transmisją</button>
+        <button id="stopCstv" class="button" type="button" hidden>Rozłącz</button>
+      </div>
+    </form>
+    <p id="cstvState" class="subtle" role="status"></p>
+  </dialog>
 
   <dialog id="shareDialog" aria-labelledby="shareTitle">
     <div class="dialog-heading">

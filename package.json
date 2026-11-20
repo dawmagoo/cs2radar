@@ -1,8 +1,8 @@
 {
   "name": "cs2-webradar",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "private": true,
-  "description": "Radar CS2 z podglądem minimapy i opcjonalną telemetrią GSI",
+  "description": "Radar CS2 dla obserwatorów CSTV z telemetrią GSI i podglądem minimapy",
   "main": "electron-main.js",
   "scripts": {
     "start": "node server.js",
@@ -16,6 +16,7 @@
     "node": ">=24"
   },
   "dependencies": {
+    "cs2parser": "2.8.0",
     "express": "4.22.3",
     "ws": "8.23.0"
   },
@@ -32,6 +33,7 @@
       "electron-main.js",
       "preload.js",
       "server.js",
+      "cstv.js",
       "telemetry.js",
       "public/**/*",
       "package.json",
