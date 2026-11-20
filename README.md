@@ -26,7 +26,15 @@ npm test
 npm run desktop
 ```
 
-Samą wersję przeglądarkową uruchomisz przez `npm start`. Wejdź na [http://127.0.0.1:3000](http://127.0.0.1:3000), pobierz konfigurację GSI z aplikacji, skopiuj ją do `game/csgo/cfg` w katalogu CS2 i uruchom grę ponownie.
+Samą wersję przeglądarkową uruchomisz przez `npm start`. Otwórz adres wypisany w terminalu. Jeśli port 3000 jest zajęty, radar przy starcie może wybrać kolejny wolny port do 3010. Następnie wyszuka CS2 przez Steam i zapisze w grze plik GSI z aktualnym adresem odbiornika.
+
+### Gdy radar czeka na CS2
+
+1. Otwórz **Konfiguracja GSI** i sprawdź status oraz wyświetloną ścieżkę pliku.
+2. Jeśli radar nie znalazł gry, w bibliotece Steam przejdź do **CS2 → Właściwości → Zainstalowane pliki → Przeglądaj**. Wklej ścieżkę tego katalogu w panelu, użyj `CS2_PATH` przy starcie lub pobierz plik GSI i zapisz go w podfolderze `game/csgo/cfg`. Przy zmienionym pliku **Zastąp z kopią** zabezpiecza wcześniejszą konfigurację.
+3. Po zapisaniu pliku zostaw radar uruchomiony, zamknij całkowicie CS2 i uruchom grę jeszcze raz. Wejdź do meczu albo otwórz widok obserwatora. Panel rozróżnia oczekiwanie na pierwszy pakiet, odrzucony pakiet i pakiet bez stanu mapy.
+
+Plik musi mieć nazwę `gamestate_integration_webradar.cfg` i wskazywać port aktualnie uruchomionej instancji. Zamknij starszą instancję radaru, jeżeli uruchamiasz wersję z repozytorium. [Przykład konfiguracji CS2 GSI](https://github.com/antonpup/CounterStrike2GSI/blob/master/CounterStrike2GSI/CS2GSIFile.cs)
 
 ### Widoki map
 
@@ -50,4 +58,4 @@ Import zachowuje istniejące grafiki, chyba że podasz `--replace`. Serwer i apl
 
 ### Ręczna konfiguracja LAN
 
-Jeśli potrzebujesz stałego portu i własnych tokenów, ustaw `HOST=0.0.0.0` i dwa różne losowe sekrety w `GSI_TOKEN` oraz `VIEW_TOKEN`. W pobranym pliku GSI, obok sekcji `data`, dodaj `"auth" { "token" "wartość_GSI_TOKEN" }`. Otwórz na drugim urządzeniu adres IP komputera z serwerem i podaj `VIEW_TOKEN` w sekcji **Dostęp LAN**. HTTP i WebSocket przesyłają w tym trybie dane bez szyfrowania. Korzystaj z zaufanej sieci lokalnej.
+Jeśli potrzebujesz stałego portu i własnych tokenów, ustaw `HOST=0.0.0.0` i dwa różne losowe sekrety w `GSI_TOKEN` oraz `VIEW_TOKEN`. Możesz ustawić `CS2_PATH`, aby zapisać konfigurację automatycznie, albo w pobranym pliku obok sekcji `data` dodać `"auth" { "token" "wartość_GSI_TOKEN" }`. Otwórz na drugim urządzeniu adres IP komputera z serwerem i podaj `VIEW_TOKEN` w sekcji **Dostęp LAN**. HTTP i WebSocket przesyłają w tym trybie dane bez szyfrowania. Korzystaj z zaufanej sieci lokalnej.

@@ -10,6 +10,18 @@ const dash = '—';
 const setup = window.webRadarSetup;
 const api = createLocalApi(() => $('auth').value.trim());
 const sharingControls = setup ?? api;
+const setupControls = setup ?? {
+  detect: () => api.configureGsi('detect'),
+  choose: () => api.configureGsi('choose', $('gameFolder').value),
+  replace: () => api.configureGsi('replace'),
+};
+const gsiRejections = {
+  auth: 'Gra używa innego tokenu GSI. Zapisz aktualny plik i uruchom CS2 ponownie.',
+  host: 'Pakiet dotarł pod niewłaściwy adres. Zapisz aktualny plik, aby ustawić adres tego radaru.',
+  format: 'Pakiet dotarł, ale serwer odrzucił jego format. Zapisz aktualny plik GSI i uruchom CS2 ponownie.',
+  size: 'Pakiet GSI przekroczył limit rozmiaru. Zapisz aktualny plik WebRadar i uruchom CS2 ponownie.',
+  game: 'Serwer odebrał pakiet innej gry. Sprawdź adres GSI dla CS2.',
+};
 const tokenKey = 'cs2-webradar:view-token';
 const staleAfter = 40_000;
 const allowedImageTypes = new Set(['image/png', 'image/jpeg', 'image/webp']);
@@ -48,6 +60,11 @@ let boundsDirty = false;
 let grenadeTrails = new Map();
 let trailMatch;
 let trailStamp;
+let setupState;
+let receiver;
+let receiverBusy = false;
+let setupBusy = false;
+let viewOnly = false;
 
 function text(id, value) {
   const node = $(id);
@@ -399,9 +416,15 @@ function render() {
   text('playerUtility', loadout.join(' · '));
   showRoster(active, player);
 
+  const waiting = !demo && !authNeeded && !live.updated && connection === 'open';
+  $('gsiWaiting').hidden = !waiting;
+  $('waitingSetup').hidden = viewOnly;
+  if (waiting) text('gsiWaitingMessage', waitingMessage());
   let hint = '';
   if (!demo && authNeeded) hint = 'Wpisz token w sekcji Dostęp LAN.';
-  else if (!demo && !live.updated) hint = 'Uruchom CS2 z włączonym GSI lub wypróbuj tryb demo.';
+  else if (waiting) hint = '';
+  else if (!demo && !live.updated) hint = 'Łączę się z lokalnym serwerem radaru.';
+  else if (!demo && live.map === 'unknown') hint = 'Serwer odbiera dane. Wejdź do meczu, aby CS2 wysłało stan mapy.';
   else if (!fresh) hint = 'Pozycja pojawi się po nadejściu nowych danych.';
   else if (!correctMap && mapId(active.map)) hint = `CS2 zgłasza mapę ${nameForMap(mapId(active.map))}.`;
   else if (!visiblePlayers.length && !point) hint = 'CS2 nie udostępnia pozycji w tym widoku. Użyj widoku obserwatora, aby zobaczyć pozycje drużyn.';
@@ -490,7 +513,8 @@ async function initializeConnection() {
     const reply = await response.json();
     viewTokenRequired = Boolean(reply.viewTokenRequired);
     $('lanSettings').hidden = !viewTokenRequired;
-    if (reply.viewOnly) {
+    viewOnly = Boolean(reply.viewOnly);
+    if (viewOnly) {
       $('setup').hidden = true;
       mapAccess = 'viewer';
       $('mapFileWrap').hidden = true;
@@ -502,6 +526,7 @@ async function initializeConnection() {
       $('share').hidden = false;
     }
     if (mapAccess === 'host') void loadMapImage();
+    void showReceiverStatus(reply);
   } catch {
     $('lanSettings').hidden = Boolean(setup);
   }
@@ -510,27 +535,36 @@ async function initializeConnection() {
 
 function updateSetup(value) {
   if (!value) return;
+  setupState = value;
   text('setupMessage', value.message);
   text('setupPath', value.path || '');
   $('setupPath').hidden = !value.path;
+  text('setupDetail', value.detail || '');
+  $('setupDetail').hidden = !value.detail;
   $('replace').hidden = value.state !== 'conflict';
+  $('webReplace').hidden = value.state !== 'conflict';
+  render();
 }
 
 async function setupAction(action) {
-  const buttons = $('desktopSetup').querySelectorAll('button');
+  if (setupBusy) return;
+  setupBusy = true;
+  const buttons = $('setupDialog').querySelectorAll('[data-gsi]');
   buttons.forEach(button => { button.disabled = true; });
   text('setupFeedback', '');
+  if (action === 'detect') text('setupMessage', 'Szukam folderu Counter-Strike 2 w Steam…');
   try {
-    const result = await setup[action]();
+    const result = await setupControls[action]();
     if (action === 'save') {
-      if (result.saved) text('setupFeedback', `Zapisano ${result.path}. Skopiuj plik do game/csgo/cfg i zrestartuj CS2.`);
+      if (result.saved) text('setupFeedback', `Zapisano ${result.path}. Skopiuj plik do game/csgo/cfg i uruchom CS2 ponownie.`);
     } else {
       updateSetup(result);
       if (result?.backup && action === 'replace') text('setupFeedback', `Kopia: ${result.backup}`);
     }
   } catch {
-    text('setupFeedback', 'Operacja się nie powiodła. Spróbuj ponownie lub zapisz plik w innym folderze.');
+    text('setupFeedback', 'Operacja się nie powiodła. Pobierz plik lub wybierz inny folder.');
   } finally {
+    setupBusy = false;
     buttons.forEach(button => { button.disabled = false; });
   }
 }
@@ -708,32 +742,63 @@ if (setup) {
   for (const [button, action] of [['detect', 'detect'], ['choose', 'choose'], ['replace', 'replace'], ['saveConfig', 'save']]) {
     $(button).addEventListener('click', () => setupAction(action));
   }
-  void setupAction('status');
-} else {
-  text('setupMessage', 'Skonfiguruj grę plikiem GSI. Podgląd pojawi się po odebraniu pierwszego komunikatu.');
 }
-async function showReceiverStatus() {
+$('webDetect').addEventListener('click', () => void setupAction('detect'));
+$('webReplace').addEventListener('click', () => void setupAction('replace'));
+$('gameFolderForm').addEventListener('submit', event => {
+  event.preventDefault();
+  void setupAction('choose');
+});
+
+function activeRejection() {
+  const recent = receiver?.rejection;
+  return recent && recent.at > (live.updated || 0) && Date.now() - recent.at < 45_000
+    ? gsiRejections[recent.reason] : '';
+}
+
+function waitingMessage() {
+  if (viewOnly) return 'Host czeka na dane z CS2.';
+  return activeRejection() || setupState?.message
+    || (receiver?.setupAvailable ? 'Sprawdzam plik GSI w katalogu Steam.' : 'Wgraj plik GSI w sekcji konfiguracji i uruchom CS2 ponownie.');
+}
+
+async function showReceiverStatus(health) {
+  if (receiverBusy || viewOnly) return;
+  receiverBusy = true;
   try {
-    const response = await fetch('/health', { signal: AbortSignal.timeout(2500) });
-    const { updated, receiver } = await response.json();
+    const info = health ?? await (await fetch('/health', { signal: AbortSignal.timeout(2500) })).json();
+    receiver = info.receiver;
     if (!receiver) return;
+    $('webSetupControls').hidden = !receiver.setupAvailable;
+    if (receiver.setupAvailable && !setupBusy) {
+      const read = setup ? setup.status : api.gsiStatus;
+      const current = await read();
+      if (!setupBusy) updateSetup(current);
+    } else if (!setupState) {
+      text('setupMessage', 'Zapisz plik GSI w folderze CS2 i uruchom grę ponownie.');
+    }
+    const updated = info.updated || 0;
     const age = Date.now() - updated;
-    const message = receiver.rejectedAuthAt > updated && Date.now() - receiver.rejectedAuthAt < 45_000
-      ? 'CS2 wysyła dane ze starszym tokenem. Zapisz konfigurację i zrestartuj grę.'
-      : !updated ? 'Serwer czeka na pierwszy komunikat z gry.'
-        : age > staleAfter ? 'Serwer odebrał dane wcześniej. Sprawdź, czy CS2 jest uruchomione.'
-          : receiver.observer ? `Tryb obserwatora · pozycje: ${receiver.positions}`
-            : receiver.positions ? 'Odbieram bieżącą pozycję i telemetrię gracza.'
-              : 'Odbieram telemetrię. Widok obserwatora może udostępnić pozycje drużyn.';
-    text('receiverStatus', message);
+    let message = 'Serwer czeka na pierwszy pakiet z gry.';
+    if (updated && age > staleAfter) message = 'Ostatni pakiet z gry dotarł wcześniej. Sprawdź aktywną instancję CS2.';
+    else if (updated && receiver.observer) message = `Odebrano dane obserwatora · pozycje: ${receiver.positions}`;
+    else if (updated && receiver.positions) message = 'Odebrano pozycję i telemetrię gracza.';
+    else if (updated) message = 'Odebrano pakiet CS2. Wejdź do meczu, aby otrzymać stan mapy.';
+    text('receiverStatus', activeRejection() || message);
+    render();
   } catch {
     text('receiverStatus', 'Sprawdzanie połączenia z lokalnym serwerem…');
+  } finally {
+    receiverBusy = false;
   }
 }
-$('setup').addEventListener('click', () => {
+
+function openSetup() {
   $('setupDialog').showModal();
   void showReceiverStatus();
-});
+}
+$('setup').addEventListener('click', openSetup);
+$('waitingSetup').addEventListener('click', openSetup);
 $('closeSetup').addEventListener('click', () => $('setupDialog').close());
 
 function showSharing(info) {
@@ -806,6 +871,6 @@ render();
 setInterval(render, 1000);
 setInterval(() => {
   void syncSharedMap();
-  if ($('setupDialog').open) void showReceiverStatus();
+  if (!live.updated || $('setupDialog').open) void showReceiverStatus();
 }, 2500);
 setInterval(() => { if (demoStarted !== null) render(); }, 100);

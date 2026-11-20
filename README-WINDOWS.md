@@ -5,9 +5,13 @@
 1. Sklonuj repozytorium. W jego katalogu uruchom `npm ci`, a następnie `npm run desktop` na Windows x64 z Node.js 24 lub nowszym.
 2. Otwórz **CS2 WebRadar**. Program wykrywa bibliotekę Steam i instaluje plik GSI w znalezionej grze. Stan konfiguracji znajdziesz pod przyciskiem **Konfiguracja GSI**.
 3. Jeśli potrzebujesz wskazać inną instalację, wybierz **Wybierz folder CS2**. Przy folderze chronionym przed zapisem użyj **Zapisz plik GSI** i skopiuj plik do `game/csgo/cfg` w instalacji gry.
-4. Uruchom lub zrestartuj CS2. Wybierz **Tryb demo**, aby wypróbować radar bez gry.
+4. Po zapisaniu pliku zamknij całkowicie CS2 i uruchom grę ponownie. Wejdź do meczu lub do trybu obserwatora. Jeśli radar nadal czeka, w sekcji **Konfiguracja GSI** sprawdź status odbioru i ścieżkę pliku.
 
 Po zajęciu domyślnego portu 3000 aplikacja używa wolnego portu do 3010 i aktualizuje konfigurację GSI. Przy aktualizacji zapisuje kopię zastępowanego pliku. Dla pliku edytowanego ręcznie udostępnia przycisk **Zastąp z kopią**.
+
+### Wersja przeglądarkowa
+
+Polecenie `npm start` również wyszukuje grę i zapisuje konfigurację. Otwórz adres z terminala. Przy niestandardowej instalacji wklej ścieżkę pod **Konfiguracja GSI → Folder instalacji CS2**.
 
 ## Podgląd na telefonie
 

@@ -26,6 +26,7 @@ test('detects a Steam library and manifest with a custom CS2 installation folder
   const library = path.join(staging, 'Biblioteka Gier');
   const game = path.join(library, 'steamapps', 'common', 'Counter Strike 2');
   const configDir = await makeGame(game);
+  await makeGame(path.join(steam, 'steamapps', 'common', 'Counter-Strike Global Offensive'));
   await fs.mkdir(path.join(steam, 'steamapps'), { recursive: true });
   await fs.writeFile(path.join(steam, 'steamapps', 'libraryfolders.vdf'),
     `"libraryfolders" { "1" { "path" ${JSON.stringify(library)} "apps" { "730" "1" } } }`);
@@ -65,4 +66,19 @@ test('updates the old default and backs up edited settings only on explicit repl
   const replaced = await installGsiConfig(cfg, 3002, 'ab12', { replace: true });
   assert.equal(replaced.state, 'restart');
   assert.equal(await fs.readFile(replaced.backup, 'utf8'), custom);
+});
+
+test('switches from the Windows app to the web server without discarding its managed token', async t => {
+  const cfg = await makeGame(await temporaryDirectory(t));
+  const target = path.join(cfg, configName);
+  const original = renderGsiConfig(3000, 'desktop-token');
+  await fs.writeFile(target, original);
+  const web = await installGsiConfig(cfg, 3001, '', { preserveToken: true });
+  assert.equal(web.state, 'restart');
+  assert.equal(await fs.readFile(web.backup, 'utf8'), original);
+  assert.equal(await fs.readFile(target, 'utf8'), renderGsiConfig(3001, 'desktop-token'));
+
+  const desktop = await installGsiConfig(cfg, 3000, 'current-desktop-token');
+  assert.equal(desktop.state, 'restart');
+  assert.equal(await fs.readFile(target, 'utf8'), renderGsiConfig(3000, 'current-desktop-token'));
 });

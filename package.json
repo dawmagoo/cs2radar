@@ -1,6 +1,6 @@
 {
   "name": "cs2-webradar",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "private": true,
   "description": "Lokalny radar i podgląd telemetrii CS2 Game State Integration",
   "main": "electron-main.js",
@@ -38,7 +38,8 @@
       "public/**/*",
       "package.json",
       "map-store.js",
-      "lan-sharing.js"
+      "lan-sharing.js",
+      "gsi-setup.js"
     ],
     "win": {
       "target": "nsis",

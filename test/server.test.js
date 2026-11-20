@@ -143,3 +143,43 @@ test('authenticated LAN preview gets the official observer feed and rejects writ
   assert.ok(closed.length);
   assert.equal((await fetch(`http://127.0.0.1:${incomingPort}/health`)).status, 200);
 });
+
+test('the GSI receiver reports rejected packets and accepts JSON from a loopback game client', async t => {
+  const radar = createRadarServer({ gsiToken: 'game-fixture' });
+  t.after(() => radar.close());
+  const port = await radar.listen(0);
+  const base = `http://127.0.0.1:${port}`;
+  const send = (body, contentType, requestPath = '/gsi') => new Promise((resolve, reject) => {
+    const input = Buffer.from(body);
+    const request = require('node:http').request({
+      host: '127.0.0.1', port, path: requestPath, method: 'POST',
+      headers: {
+        host: '127.0.0.1',
+        'content-length': input.length,
+        ...(contentType && { 'content-type': contentType }),
+      },
+    }, response => {
+      response.resume();
+      resolve(response.statusCode);
+    });
+    request.on('error', reject);
+    request.end(input);
+  });
+  const health = () => fetch(`${base}/health`).then(response => response.json());
+
+  assert.equal((await health()).receiver.attemptedAt, 0);
+  assert.equal(await send('invalid JSON', 'text/plain'), 400);
+  assert.equal((await health()).receiver.rejection.reason, 'format');
+  assert.equal(await send(JSON.stringify({ provider: { appid: 730 } }), 'application/json'), 401);
+  assert.equal((await health()).receiver.rejection.reason, 'auth');
+  assert.equal((await health()).updated, 0);
+  const packet = { auth: { token: 'game-fixture' }, provider: { appid: 730 }, map: { name: 'de_mirage' } };
+  assert.equal(await send(JSON.stringify(packet), 'text/plain; charset=utf-8'), 200);
+  const accepted = await health();
+  assert.equal(accepted.receiver.rejection, null);
+  assert.equal(accepted.receiver.map, 'de_mirage');
+  assert.ok(accepted.updated > 0);
+
+  await setTimeout(50);
+  assert.equal(await send(JSON.stringify(packet), undefined, '/'), 200);
+});

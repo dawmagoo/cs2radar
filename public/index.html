@@ -45,7 +45,12 @@
           <span id="imageMode">Siatka współrzędnych</span>
           <span id="sourceTag" hidden>Obserwator</span>
         </div>
-        <div id="radarHint" class="radar-hint">Czekam na dane z CS2</div>
+        <div id="radarHint" class="radar-hint" hidden></div>
+        <section id="gsiWaiting" class="gsi-waiting" aria-labelledby="gsiWaitingTitle" hidden>
+          <h3 id="gsiWaitingTitle">Radar czeka na dane z CS2</h3>
+          <p id="gsiWaitingMessage" role="status">Sprawdzam konfigurację GSI.</p>
+          <button id="waitingSetup" class="button primary" type="button">Sprawdź konfigurację</button>
+        </section>
       </div>
       <div class="radar-legend" aria-label="Oznaczenia na radarze">
         <span><i class="legend-dot ct"></i>CT</span>
@@ -180,16 +185,30 @@
     <p id="setupMessage" role="status">Sprawdzam konfigurację…</p>
     <p id="receiverStatus" class="receiver-status subtle" role="status"></p>
     <p id="setupPath" class="subtle setup-path" hidden></p>
+    <p id="setupDetail" class="subtle setup-path" hidden></p>
     <dl class="endpoint"><dt>Adres GSI</dt><dd id="setupAddress"></dd></dl>
     <div id="desktopSetup" class="actions" hidden>
-      <button id="detect" class="button" type="button">Wykryj przez Steam</button>
-      <button id="choose" class="button primary" type="button">Wybierz folder CS2</button>
-      <button id="replace" class="button" type="button" hidden>Zastąp z kopią</button>
-      <button id="saveConfig" class="button" type="button">Zapisz plik GSI</button>
+      <button id="detect" data-gsi class="button" type="button">Wykryj przez Steam</button>
+      <button id="choose" data-gsi class="button primary" type="button">Wybierz folder CS2</button>
+      <button id="replace" data-gsi class="button" type="button" hidden>Zastąp z kopią</button>
+      <button id="saveConfig" data-gsi class="button" type="button">Zapisz plik GSI</button>
     </div>
     <div id="browserSetup" hidden>
-      <a class="button primary" href="/api/gsi-config" download>Pobierz plik GSI</a>
-      <p class="subtle">Skopiuj plik do <code>game/csgo/cfg</code> w katalogu CS2 i uruchom grę ponownie.</p>
+      <div id="webSetupControls" hidden>
+        <div class="actions">
+          <button id="webDetect" class="button" type="button" data-gsi>Wykryj przez Steam</button>
+          <button id="webReplace" class="button" type="button" data-gsi hidden>Zastąp z kopią</button>
+        </div>
+        <form id="gameFolderForm" class="game-folder-form">
+          <label class="field">Folder instalacji CS2
+            <input id="gameFolder" type="text" autocomplete="off" spellcheck="false" required>
+          </label>
+          <button class="button primary" type="submit" data-gsi>Zapisz w tym folderze</button>
+        </form>
+        <p class="subtle">Ścieżkę znajdziesz w Steam, wybierając CS2 → Właściwości → Zainstalowane pliki → Przeglądaj.</p>
+      </div>
+      <a class="button" href="/api/gsi-config" download>Pobierz plik GSI</a>
+      <p class="subtle">Do ręcznej instalacji zapisz plik w <code>game/csgo/cfg</code> w katalogu CS2 i uruchom grę ponownie.</p>
     </div>
     <p id="setupFeedback" class="subtle" role="status"></p>
   </dialog>

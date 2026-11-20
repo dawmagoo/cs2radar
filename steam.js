@@ -3,6 +3,7 @@
 const { execFile } = require('node:child_process');
 const { randomUUID } = require('node:crypto');
 const { readFileSync } = require('node:fs');
+const { homedir } = require('node:os');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { promisify } = require('node:util');
@@ -15,8 +16,9 @@ const exec = promisify(execFile);
 const gameName = 'Counter-Strike Global Offensive';
 
 function renderGsiConfig(port, token = '', source = template) {
-  if (!Number.isInteger(port) || port < 1 || port > 65_535 || !/^[a-f0-9]*$/.test(token)) {
-    throw new Error('Nieprawidłowe ustawienia GSI.');
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error('Nieprawidłowy port GSI.');
+  if (typeof token !== 'string' || token.length > 512 || /["\\\x00-\x1f\x7f]/.test(token)) {
+    throw new Error('Token GSI musi być ciągiem bez cudzysłowów, ukośników odwrotnych i znaków sterujących.');
   }
   const config = source.replace('127.0.0.1:3000', `127.0.0.1:${port}`);
   return token ? config.replace('  "data"', `  "auth"\n  {\n    "token" "${token}"\n  }\n  "data"`) : config;
@@ -24,6 +26,19 @@ function renderGsiConfig(port, token = '', source = template) {
 
 function normalize(content) {
   return content.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').trim();
+}
+
+function readManagedConfig(content) {
+  const oldPort = Number(content.match(/"uri"\s+"http:\/\/127\.0\.0\.1:(\d{1,5})\/gsi"/)?.[1]);
+  if (!Number.isInteger(oldPort) || oldPort < 1 || oldPort > 65_535) return null;
+  const oldToken = content.match(/"token"\s+"([^"\r\n]*)"/)?.[1] ?? '';
+  try {
+    const managed = [template, previousTemplate, legacy]
+      .some(source => normalize(content) === normalize(renderGsiConfig(oldPort, oldToken, source)));
+    return managed ? { port: oldPort, token: oldToken } : null;
+  } catch {
+    return null;
+  }
 }
 
 function vdfStrings(content, key) {
@@ -92,6 +107,11 @@ async function findConfigDirectory(preferred, explicitRoots) {
       defaultRoots.push(`${drive}:\\SteamLibrary`, `${drive}:\\Steam`);
     }
   }
+  if (process.platform === 'linux') {
+    defaultRoots.push(path.join(env.XDG_DATA_HOME || path.join(homedir(), '.local', 'share'), 'Steam'),
+      path.join(homedir(), '.steam', 'steam'), path.join(homedir(), '.var', 'app', 'com.valvesoftware.Steam', 'data', 'Steam'));
+  }
+  if (process.platform === 'darwin') defaultRoots.push(path.join(homedir(), 'Library', 'Application Support', 'Steam'));
   const roots = explicitRoots ?? [...await steamRegistryRoots(), ...defaultRoots];
   const libraries = new Set(roots.filter(root => path.isAbsolute(root)).map(root => path.normalize(root)));
   const libraryFiles = [...libraries].map(root => path.join(root, 'steamapps', 'libraryfolders.vdf'));
@@ -107,30 +127,29 @@ async function findConfigDirectory(preferred, explicitRoots) {
     const manifest = await fs.readFile(path.join(apps, 'appmanifest_730.acf'), 'utf8').catch(() => '');
     const folder = vdfStrings(manifest, 'installdir')[0];
     const installDir = folder && !/[\\/:]/.test(folder) && folder !== '..' && folder !== '.' ? folder : gameName;
-    return resolveConfigDirectory(path.join(apps, 'common', installDir));
+    const directory = await resolveConfigDirectory(path.join(apps, 'common', installDir));
+    return { directory, installed: vdfStrings(manifest, 'appid')[0] === '730' };
   }));
-  return candidates.find(Boolean) ?? null;
+  return (candidates.find(candidate => candidate.directory && candidate.installed)
+    ?? candidates.find(candidate => candidate.directory))?.directory ?? null;
 }
 
-async function installGsiConfig(directory, port, token, { replace = false } = {}) {
+async function installGsiConfig(directory, port, token, { replace = false, preserveToken = false } = {}) {
   const target = path.join(directory, configName);
-  const config = renderGsiConfig(port, token);
   let existing;
   try {
     existing = await fs.readFile(target, 'utf8');
   } catch (error) {
     if (error.code !== 'ENOENT') throw error;
-    await fs.writeFile(target, config, { flag: 'wx' });
+    await fs.writeFile(target, renderGsiConfig(port, token), { flag: 'wx' });
     return { state: 'restart', path: target };
   }
 
+  const managed = readManagedConfig(existing);
+  const effectiveToken = preserveToken && !token && managed ? managed.token : token;
+  const config = renderGsiConfig(port, effectiveToken);
   if (normalize(existing) === normalize(config)) return { state: 'ready', path: target };
-  const formerPort = Number(existing.match(/"uri"\s+"http:\/\/127\.0\.0\.1:(\d{1,5})\/gsi"/)?.[1]);
-  const managed = formerPort > 0 && formerPort <= 65_535
-    && [template, previousTemplate].some(source => normalize(existing) === normalize(renderGsiConfig(formerPort, token, source)));
-  if (!replace && !managed && normalize(existing) !== normalize(legacy)) {
-    return { state: 'conflict', path: target };
-  }
+  if (!replace && !managed) return { state: 'conflict', path: target };
 
   const suffix = randomUUID().slice(0, 8);
   const backup = `${target}.${Date.now()}-${suffix}.bak`;

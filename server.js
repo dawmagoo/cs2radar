@@ -11,10 +11,29 @@ const { version } = require('./package.json');
 const { isRecord, readState } = require('./telemetry');
 const { createMapStore, mapKey, maxImageBytes } = require('./map-store');
 const { createLanSharing } = require('./lan-sharing');
+const { createGsiSetup } = require('./gsi-setup');
 
 const publicDir = path.join(__dirname, 'public');
 const loopbackHost = '127.0.0.1';
 const localHosts = new Set([loopbackHost, 'localhost', '::1']);
+const gsiRoutes = ['/gsi', '/'];
+const gsiFields = ['provider', 'map', 'player', 'round', 'allplayers', 'phase_countdowns', 'grenades', 'allgrenades', 'bomb'];
+
+function isGsiPost(req) {
+  return req.method === 'POST' && gsiRoutes.includes(req.url?.split('?', 1)[0]);
+}
+
+async function bindLocalRadar(radar, preferred = 3000) {
+  const ports = new Set([preferred, ...Array.from({ length: 11 }, (_, index) => 3000 + index)]);
+  for (const port of ports) {
+    try {
+      return await radar.listen(port);
+    } catch (error) {
+      if (!['EADDRINUSE', 'EACCES'].includes(error.code)) throw error;
+    }
+  }
+  throw new Error('Porty 3000–3010 są zajęte lub niedostępne. Zamknij poprzedni radar albo ustaw własny port.');
+}
 
 function tokenMatches(received, expected) {
   if (!expected) return true;
@@ -65,13 +84,22 @@ function createRadarServer({
   const wss = new WebSocketServer({ noServer: true, maxPayload: 2_048 });
   let lastAccepted = 0;
   let closing;
-  let rejectedAuthAt = 0;
+  let setup;
+  let attemptedAt = 0;
+  let rejection = null;
+
+  function rejectGsi(reason) {
+    attemptedAt = Date.now();
+    rejection = { reason, at: attemptedAt };
+  }
 
   function allowedHost(req) {
     if (!localOnly) return Boolean(req.headers.host);
     const port = server.address()?.port;
     const hostHeader = req.headers.host?.toLowerCase();
-    return ['127.0.0.1', 'localhost', '[::1]'].some(name => hostHeader === `${name}:${port}` || (port === 80 && hostHeader === name));
+    const bareHost = port === 80 || (isGsiPost(req) && localHosts.has(req.socket.remoteAddress));
+    return (bareHost && !hostHeader) || ['127.0.0.1', 'localhost', '[::1]']
+      .some(name => hostHeader === `${name}:${port}` || (bareHost && hostHeader === name));
   }
 
   function sameOrigin(req) {
@@ -101,7 +129,12 @@ function createRadarServer({
       'Referrer-Policy': 'no-referrer',
       'Content-Security-Policy': "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
     });
-    if (!allowedHost(req) || !sameOrigin(req)) return res.sendStatus(403);
+    const crossSitePost = isGsiPost(req) && req.get('Sec-Fetch-Site') === 'cross-site';
+    if (!sameOrigin(req) || crossSitePost) return res.sendStatus(403);
+    if (!allowedHost(req)) {
+      if (canManage && isGsiPost(req)) rejectGsi('host');
+      return res.sendStatus(403);
+    }
     next();
   });
 
@@ -111,7 +144,10 @@ function createRadarServer({
     res.json({
       ok: true, version, updated: state.updated, clients: wss.clients.size,
       viewTokenRequired: Boolean(viewToken), viewOnly: readOnly, manageMaps: canManage,
-      ...(canManage ? { receiver: { rejectedAuthAt, positions: state.players.length, observer: state.observer } } : {}),
+      ...(canManage ? { receiver: {
+        attemptedAt, rejection, positions: state.players.length, observer: state.observer,
+        setupAvailable: Boolean(setup), map: state.map,
+      } } : {}),
     });
   });
 
@@ -171,30 +207,46 @@ function createRadarServer({
     res.json(names.filter(name => /^[a-z0-9_-]+\.png$/i.test(name)));
   });
 
+  app.get('/api/gsi-setup', manage, (req, res) => setup ? res.json(setup.status()) : res.sendStatus(404));
+  app.post('/api/gsi-setup', manage, express.json({ limit: '4kb' }), asyncRoute(async (req, res) => {
+    if (!setup) return res.sendStatus(404);
+    const action = req.body?.action;
+    if (action === 'detect') return res.json(await setup.detect());
+    if (action === 'choose') return res.json(await setup.choose(req.body.directory));
+    if (action === 'replace') return res.json(await setup.replace());
+    res.sendStatus(400);
+  }));
+
   app.get('/api/gsi-config', (req, res) => {
     if (readOnly) return res.sendStatus(404);
+    const canDownloadToken = canManage && canView(req) && req.get('Sec-Fetch-Site') !== 'cross-site';
     res.attachment('gamestate_integration_webradar.cfg')
       .type('text/plain')
-      .send(renderGsiConfig(server.address().port));
+      .send(renderGsiConfig(server.address().port, canDownloadToken ? gsiToken : ''));
   });
 
-  if (readOnly) app.post('/gsi', (req, res) => res.sendStatus(405));
-  app.post('/gsi', express.json({ limit: '256kb', inflate: false }), (req, res) => {
-    if (!req.is('application/json')) return res.sendStatus(415);
+  if (readOnly) app.post(gsiRoutes, (req, res) => res.sendStatus(405));
+  app.post(gsiRoutes, (req, res, next) => {
+    attemptedAt = Date.now();
+    next();
+  }, express.json({ limit: '256kb', inflate: false, type: () => true }), (req, res) => {
     const body = req.body;
     if (!tokenMatches(body?.auth?.token, gsiToken)) {
-      rejectedAuthAt = Date.now();
+      rejectGsi('auth');
       return res.sendStatus(401);
     }
-    if (!isRecord(body) || !['provider', 'map', 'player', 'round', 'allplayers', 'phase_countdowns', 'grenades', 'bomb'].some(key => Object.hasOwn(body, key))) {
+    if (!isRecord(body) || !gsiFields.some(key => Object.hasOwn(body, key))) {
+      rejectGsi('format');
       return res.status(400).json({ error: 'Brak pól GSI.' });
     }
     if (body.provider?.appid != null && String(body.provider.appid) !== '730') {
+      rejectGsi('game');
       return res.status(400).json({ error: 'Nieobsługiwany identyfikator gry.' });
     }
     const now = Date.now();
     if (now - lastAccepted < 40) return res.sendStatus(202);
     lastAccepted = now;
+    rejection = null;
     feed.publish(readState(body, now));
     res.sendStatus(200);
   });
@@ -203,6 +255,7 @@ function createRadarServer({
   app.use((error, req, res, next) => {
     if (res.headersSent) return next(error);
     const status = Number.isInteger(error.status) && error.status >= 400 && error.status < 500 ? error.status : 500;
+    if (isGsiPost(req)) rejectGsi(status === 413 ? 'size' : 'format');
     res.status(status).json({ error: status === 500 ? 'Błąd serwera.' : 'Nieprawidłowe żądanie.' });
   });
 
@@ -260,17 +313,35 @@ function createRadarServer({
     return closing;
   }
 
-  return { listen, close, feed, sharing };
+  return { listen, close, feed, sharing, attachGsiSetup: value => { setup = value; } };
 }
 
 async function startWeb() {
-  const port = Number(process.env.PORT || 3000);
-  if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error('PORT musi być liczbą z zakresu 1–65535.');
+  const requestedPort = Number(process.env.PORT || 3000);
+  if (!Number.isInteger(requestedPort) || requestedPort < 1 || requestedPort > 65_535) {
+    throw new Error('PORT musi być liczbą z zakresu 1–65535.');
+  }
   const host = process.env.HOST || loopbackHost;
-  const radar = createRadarServer({ host, gsiToken: process.env.GSI_TOKEN, viewToken: process.env.VIEW_TOKEN });
-  await radar.listen(port);
+  const token = process.env.GSI_TOKEN || '';
+  const radar = createRadarServer({ host, gsiToken: token, viewToken: process.env.VIEW_TOKEN });
+  const useFallback = !process.env.PORT && host === loopbackHost;
+  const port = await (useFallback ? bindLocalRadar(radar, requestedPort) : radar.listen(requestedPort));
   console.log(`CS2 WebRadar: http://${host.includes(':') ? `[${host}]` : host}:${port}`);
+  if (port !== requestedPort) console.log(`Port ${requestedPort} jest zajęty. Otwórz adres z portem ${port}.`);
   for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => radar.close());
+
+  // An IPv6-only listener cannot use the IPv4 URI from the current GSI template.
+  if (host === loopbackHost || host === '0.0.0.0') {
+    const setup = createGsiSetup({ port, token, preserveToken: true });
+    if (host === loopbackHost) radar.attachGsiSetup(setup);
+    const specified = process.env.CS2_PATH;
+    if (host === loopbackHost || specified) {
+      const status = await (specified ? setup.choose(specified) : setup.detect());
+      console.log(`GSI: ${status.message}`);
+      if (status.path) console.log(status.path);
+      if (status.detail) console.log(status.detail);
+    }
+  }
 }
 
 if (require.main === module) {
@@ -280,4 +351,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { createRadarServer };
+module.exports = { bindLocalRadar, createRadarServer };

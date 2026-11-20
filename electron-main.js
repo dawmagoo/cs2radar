@@ -4,8 +4,9 @@ const { app, BrowserWindow, clipboard, dialog, ipcMain, Menu } = require('electr
 const { randomBytes } = require('node:crypto');
 const fs = require('node:fs/promises');
 const path = require('node:path');
-const { createRadarServer } = require('./server');
-const { configName, findConfigDirectory, installGsiConfig, renderGsiConfig, resolveConfigDirectory } = require('./steam');
+const { bindLocalRadar, createRadarServer } = require('./server');
+const { createGsiSetup } = require('./gsi-setup');
+const { configName, renderGsiConfig } = require('./steam');
 
 let window;
 let radar;
@@ -13,8 +14,7 @@ let url;
 let port;
 let settings;
 let settingsPath;
-let setupTask;
-let setupStatus;
+let gsiSetup;
 
 async function readSettings() {
   try {
@@ -37,66 +37,6 @@ async function saveSettings() {
   await fs.rename(temporary, settingsPath);
 }
 
-async function bindRadar() {
-  const candidates = new Set([settings.preferredPort, 3000, 3001, 3002, 3003, 3004, 3005, 3006, 3007, 3008, 3009, 3010]);
-  for (const candidate of candidates) {
-    try {
-      return await radar.listen(candidate);
-    } catch (error) {
-      if (!['EADDRINUSE', 'EACCES'].includes(error.code)) throw error;
-    }
-  }
-  throw new Error('Nie udało się uruchomić radaru na portach od 3000 do 3010. Zwolnij jeden z portów i uruchom aplikację ponownie.');
-}
-
-const messages = {
-  ready: 'Plik GSI jest w katalogu CS2. Uruchom grę, aby zobaczyć dane.',
-  restart: 'Plik GSI jest gotowy. Uruchom lub zrestartuj CS2.',
-  conflict: 'W tym katalogu jest zmieniony plik WebRadar. Możesz zastąpić go z zachowaniem kopii.',
-  missing: 'Nie znaleziono CS2. Wybierz folder gry w aplikacji albo zapisz plik GSI ręcznie.',
-  invalid: 'Wybierz folder instalacji CS2 zawierający game/csgo/cfg lub sam folder cfg.',
-  error: 'Nie można zapisać pliku GSI. Zapisz go ręcznie i skopiuj do game/csgo/cfg.',
-};
-
-function status(state, fields = {}) {
-  return { state, message: messages[state], port, ...fields };
-}
-
-async function installIn(directory, options) {
-  try {
-    const result = await installGsiConfig(directory, port, settings.token, options);
-    settings.configDir = directory;
-    await saveSettings();
-    return status(result.state, result);
-  } catch (error) {
-    console.error('GSI setup:', error);
-    return status('error', { path: path.join(directory, configName) });
-  }
-}
-
-function startSetup(action) {
-  if (!setupTask) {
-    setupTask = Promise.resolve().then(action).then(result => {
-      if (result) setupStatus = result;
-      return setupStatus;
-    }).catch(error => {
-      console.error('GSI setup:', error);
-      setupStatus = status('error');
-      return setupStatus;
-    }).finally(() => {
-      setupTask = null;
-    });
-  }
-  return setupTask;
-}
-
-function autoSetup() {
-  return startSetup(async () => {
-    const directory = await findConfigDirectory(settings.configDir);
-    return directory ? installIn(directory) : status('missing');
-  });
-}
-
 function registerSetupHandlers() {
   function handle(channel, handler) {
     ipcMain.handle(channel, (event, ...args) => {
@@ -117,35 +57,32 @@ function registerSetupHandlers() {
     return true;
   });
 
-  handle('setup:status', () => setupTask ?? setupStatus);
-  handle('setup:detect', autoSetup);
+  handle('setup:status', gsiSetup.status);
+  handle('setup:detect', gsiSetup.detect);
 
-  handle('setup:choose', () => startSetup(async () => {
+  handle('setup:choose', async () => {
     const result = await dialog.showOpenDialog(window, {
       title: 'Wybierz folder instalacji CS2',
       defaultPath: settings.configDir || app.getPath('home'),
       properties: ['openDirectory'],
     });
-    if (result.canceled) return null;
-    const directory = await resolveConfigDirectory(result.filePaths[0]);
-    return directory ? installIn(directory) : status('invalid');
-  }));
+    return result.canceled ? gsiSetup.status() : gsiSetup.choose(result.filePaths[0]);
+  });
 
-  handle('setup:replace', () => startSetup(async () => {
-    if (setupStatus?.state !== 'conflict') return null;
-    const directory = await resolveConfigDirectory(settings.configDir);
-    if (!directory) return status('missing');
+  handle('setup:replace', async () => {
+    const current = gsiSetup.status();
+    if (current.state !== 'conflict') return current;
     const result = await dialog.showMessageBox(window, {
       type: 'question',
       title: 'Zastąp konfigurację WebRadar',
       message: 'Zastąpić plik GSI aktualną konfiguracją?',
-      detail: `${setupStatus.path}\n\nKopia dotychczasowego pliku zostanie obok w folderze cfg.`,
+      detail: `${current.path}\n\nKopia dotychczasowego pliku zostanie obok w folderze cfg.`,
       buttons: ['Zachowaj plik', 'Zastąp i zapisz kopię'],
       defaultId: 0,
       cancelId: 0,
     });
-    return result.response === 1 ? installIn(directory, { replace: true }) : null;
-  }));
+    return result.response === 1 ? gsiSetup.replace() : current;
+  });
 
   handle('setup:save', async () => {
     const result = await dialog.showSaveDialog(window, {
@@ -165,9 +102,18 @@ async function main() {
   settingsPath = path.join(app.getPath('userData'), 'desktop.json');
   settings = await readSettings();
   radar = createRadarServer({ gsiToken: settings.token });
-  port = await bindRadar();
+  port = await bindLocalRadar(radar, settings.preferredPort);
   settings.preferredPort = port;
   await saveSettings();
+  gsiSetup = createGsiSetup({
+    port, token: settings.token, preferred: settings.configDir,
+    remember: async directory => {
+      if (settings.configDir === directory) return;
+      settings.configDir = directory;
+      await saveSettings();
+    },
+  });
+  radar.attachGsiSetup(gsiSetup);
 
   url = `http://127.0.0.1:${port}/`;
   window = new BrowserWindow({
@@ -194,7 +140,7 @@ async function main() {
   window.on('closed', () => { window = null; });
   window.once('ready-to-show', () => window?.show());
   registerSetupHandlers();
-  autoSetup();
+  void (process.env.CS2_PATH ? gsiSetup.choose(process.env.CS2_PATH) : gsiSetup.detect());
   await window.loadURL(url);
 }
 
