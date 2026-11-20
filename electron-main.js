@@ -3,7 +3,6 @@
 const { app, BrowserWindow, clipboard, dialog, ipcMain, Menu } = require('electron');
 const { randomBytes } = require('node:crypto');
 const fs = require('node:fs/promises');
-const { networkInterfaces } = require('node:os');
 const path = require('node:path');
 const { createRadarServer } = require('./server');
 const { configName, findConfigDirectory, installGsiConfig, renderGsiConfig, resolveConfigDirectory } = require('./steam');
@@ -16,8 +15,6 @@ let settings;
 let settingsPath;
 let setupTask;
 let setupStatus;
-let share;
-let shareOperation;
 
 async function readSettings() {
   try {
@@ -100,53 +97,6 @@ function autoSetup() {
   });
 }
 
-function localAddresses() {
-  const addresses = new Map();
-  const privateIp = /^(?:10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.)/;
-  for (const [name, records] of Object.entries(networkInterfaces())) {
-    for (const record of records || []) {
-      if (record.family === 'IPv4' && !record.internal && privateIp.test(record.address)) addresses.set(record.address, name);
-    }
-  }
-  return [...addresses].map(([ip, name]) => ({ ip, name }));
-}
-
-function shareStatus() {
-  return { addresses: localAddresses(), link: share?.link ?? '', ip: share?.ip ?? '' };
-}
-
-function changeShare(operation) {
-  if (!shareOperation) shareOperation = operation().finally(() => { shareOperation = null; });
-  return shareOperation;
-}
-
-function startShare(ip) {
-  return changeShare(async () => {
-    if (!localAddresses().some(address => address.ip === ip)) throw new Error('Wybierz dostępny adres sieci lokalnej.');
-    if (share?.ip === ip) return shareStatus();
-    if (share) await share.server.close();
-    share = null;
-    const token = randomBytes(24).toString('hex');
-    const server = createRadarServer({ host: ip, viewToken: token, feed: radar.feed, readOnly: true });
-    try {
-      const sharePort = await server.listen(0);
-      share = { server, ip, link: `http://${ip}:${sharePort}/#token=${token}` };
-      return shareStatus();
-    } catch (error) {
-      await server.close();
-      throw error;
-    }
-  });
-}
-
-function stopShare() {
-  return changeShare(async () => {
-    if (share) await share.server.close();
-    share = null;
-    return shareStatus();
-  });
-}
-
 function registerSetupHandlers() {
   function handle(channel, handler) {
     ipcMain.handle(channel, (event, ...args) => {
@@ -157,12 +107,13 @@ function registerSetupHandlers() {
     });
   }
 
-  handle('share:status', shareStatus);
-  handle('share:start', startShare);
-  handle('share:stop', stopShare);
+  handle('share:status', radar.sharing.status);
+  handle('share:start', radar.sharing.start);
+  handle('share:stop', radar.sharing.stop);
   handle('share:copy', () => {
-    if (!share) return false;
-    clipboard.writeText(share.link);
+    const { link } = radar.sharing.status();
+    if (!link) return false;
+    clipboard.writeText(link);
     return true;
   });
 
@@ -257,10 +208,7 @@ if (!app.requestSingleInstanceLock()) {
     window.focus();
   });
   app.on('window-all-closed', () => app.quit());
-  app.on('before-quit', () => {
-    radar?.close();
-    share?.server.close();
-  });
+  app.on('before-quit', () => radar?.close());
   app.whenReady().then(main).catch(error => {
     console.error(error);
     dialog.showErrorBox('CS2 WebRadar', `Nie udało się uruchomić aplikacji.\n\n${error.message}`);

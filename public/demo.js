@@ -28,7 +28,11 @@ export function demoState(map, bounds, time) {
   return {
     map, phase: 'live', round: 6, score: { ct: 4, t: 2 }, remaining: 94 - time % 94,
     player: players[0], roster: players, players, observer: true,
-    grenades: grenades.map(grenade => ({ ...grenade, ...point(grenade.x, grenade.y) })),
+    grenades: grenades.map(grenade => ({
+      ...grenade, ...point(grenade.x, grenade.y),
+      trail: grenade.type === 'flashbang' ? [.6, .72, .84, 1].map(weight =>
+        point(.47 + (grenade.x - .47) * weight, .69 + (grenade.y - .69) * weight ** 2)) : [],
+    })),
     bomb: { state: 'dropped', ...point(.57, .37), remaining: null },
   };
 }

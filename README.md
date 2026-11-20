@@ -4,15 +4,15 @@ Lokalny radar do Counter-Strike 2 oparty na Game State Integration. Pokazuje poz
 
 ## Pobieranie
 
-ZIP ze źródłami jest dostępny w menu **Code → Download ZIP**. Instalator Windows i paczka do pobrania są opisane w [instrukcji Windows](README-WINDOWS.md).
+Sklonuj repozytorium i uruchom aplikację w trybie desktopowym albo w przeglądarce. Konfiguracja Steam dla wersji desktopowej jest opisana w [instrukcji Windows](README-WINDOWS.md).
 
 ## Radar
 
 - Mapa przełącza się na podstawie danych CS2. Dla Nuke, Vertigo i Train automatyczny wybór poziomu korzysta z wysokości wybranego gracza.
 - Kliknij gracza na mapie lub na liście, aby zobaczyć jego telemetrię i wyśrodkować radar. W ustawieniach możesz włączyć śledzenie, zmienić rozmiar znaczników, filtrować drużyny oraz ukryć granaty i pseudonimy.
-- Tryb demo pokazuje przykładowy mecz z dwiema drużynami, granatami i bombą.
-- W sekcji **Grafika i kalibracja mapy** wczytaj własny PNG, JPG lub WebP. Ustawienia zapisują się dla danej mapy i poziomu w aktualnym profilu.
-- Aplikacja Windows pozwala udostępnić podgląd tylko do odczytu na urządzenia w zaufanej sieci lokalnej. Wyłączenie udostępniania zamyka wszystkie połączenia i unieważnia link.
+- Znaczniki płynnie przechodzą między kolejnymi pozycjami. Ślady granatów pokazują pozycje odebrane w GSI. Tryb demo pokazuje przykładowy mecz z dwiema drużynami, granatami i bombą.
+- W sekcji **Grafika i kalibracja mapy** wczytaj PNG, JPG lub WebP. Obraz i granice mapy zapisują się na komputerze hosta dla danej mapy i poziomu.
+- **Udostępnij LAN** działa także po zwykłym `npm start`. Telefon dostaje tę samą mapę, kalibrację i telemetrię. Odświeżenie karty zachowuje dostęp w tej karcie. Wyłączenie udostępniania unieważnia link.
 
 Radar wyświetla dane obserwatora, które CS2 umieszcza w GSI. Dostępność pozycji, stanu bomby i pozostałych pól zależy od trybu gry. [Pola strumienia GSI](https://github.com/antonpup/CounterStrike2GSI/blob/master/CounterStrike2GSI/GameState.cs)
 
@@ -32,6 +32,22 @@ Samą wersję przeglądarkową uruchomisz przez `npm start`. Wejdź na [http://1
 
 Radar zawiera siatkę współrzędnych i zakresy startowe dla Mirage, Dust II, Inferno, Nuke, Ancient, Anubis, Vertigo, Overpass, Train i Cache. Grafiki dodajesz przez aplikację lub jako PNG w [public/maps](public/maps/README.txt). Zakresy map są ustawione dla pełnego, niekadrowanego widoku 1024 × 1024, na podstawie pól `pos_x`, `pos_y` i `scale`. [Metadane widoków map CS2](https://github.com/SteamTracking/GameTracking-CS2/tree/master/game/csgo/pak01_dir/resource/overviews)
 
-### LAN w wersji serwerowej
+### Import grafik z CS2
 
-Ustaw `HOST=0.0.0.0` i dwa różne losowe sekrety w `GSI_TOKEN` oraz `VIEW_TOKEN`. W pobranym pliku GSI, obok sekcji `data`, dodaj `"auth" { "token" "wartość_GSI_TOKEN" }`. Otwórz na drugim urządzeniu adres IP komputera z serwerem i podaj `VIEW_TOKEN` w sekcji **Dostęp LAN**. HTTP i WebSocket przesyłają w tym trybie dane bez szyfrowania. Korzystaj z zaufanej sieci lokalnej.
+Źródłem grafik może być lokalna instalacja gry. Zainstalowany [Source 2 Viewer CLI](https://s2v.app/ValveResourceFormat/guides/command-line.html) odczyta grafiki radaru oraz zakresy współrzędnych z lokalnego `pak01_dir.vpk`. Parametr `--cs2` jest opcjonalny, gdy aplikacja wykrywa Steam.
+
+```powershell
+npm run maps:import -- --viewer "C:\ścieżka\Source2Viewer-CLI.exe" --cs2 "D:\SteamLibrary\steamapps\common\Counter-Strike Global Offensive"
+```
+
+Jeśli grafiki są już wyeksportowane, wskaż folder z plikami PNG, JPG lub WebP. Nazwy takie jak `de_mirage_radar_psd.png`, `de_nuke_lower_radar_psd.png` i `de_nuke_lower.png` są rozpoznawane automatycznie. Jeżeli w eksporcie są też pliki podglądu map `de_mirage.txt` itd., ich zakresy wczytają się wraz z grafikami.
+
+```sh
+npm run maps:import -- --from /sciezka/do/eksportu
+```
+
+Import zachowuje istniejące grafiki, chyba że podasz `--replace`. Serwer i aplikacja korzystają z tego samego katalogu map w profilu użytkownika. Możesz wskazać inny przez `RADAR_DATA_DIR`. Repozytorium zawiera kod i siatkę współrzędnych, a grafiki pozostają u hosta.
+
+### Ręczna konfiguracja LAN
+
+Jeśli potrzebujesz stałego portu i własnych tokenów, ustaw `HOST=0.0.0.0` i dwa różne losowe sekrety w `GSI_TOKEN` oraz `VIEW_TOKEN`. W pobranym pliku GSI, obok sekcji `data`, dodaj `"auth" { "token" "wartość_GSI_TOKEN" }`. Otwórz na drugim urządzeniu adres IP komputera z serwerem i podaj `VIEW_TOKEN` w sekcji **Dostęp LAN**. HTTP i WebSocket przesyłają w tym trybie dane bez szyfrowania. Korzystaj z zaufanej sieci lokalnej.

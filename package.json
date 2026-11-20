@@ -1,6 +1,6 @@
 {
   "name": "cs2-webradar",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "private": true,
   "description": "Lokalny radar i podgląd telemetrii CS2 Game State Integration",
   "main": "electron-main.js",
@@ -9,7 +9,8 @@
     "desktop": "electron .",
     "test": "node --test",
     "dist:win": "electron-builder --win nsis --x64",
-    "dist:win:portable": "electron-builder --win portable --x64"
+    "dist:win:portable": "electron-builder --win portable --x64",
+    "maps:import": "node scripts/import-maps.js"
   },
   "engines": {
     "node": ">=24"
@@ -35,7 +36,9 @@
       "telemetry.js",
       "gamestate_integration_webradar.cfg",
       "public/**/*",
-      "package.json"
+      "package.json",
+      "map-store.js",
+      "lan-sharing.js"
     ],
     "win": {
       "target": "nsis",

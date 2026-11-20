@@ -47,6 +47,11 @@
         </div>
         <div id="radarHint" class="radar-hint">Czekam na dane z CS2</div>
       </div>
+      <div class="radar-legend" aria-label="Oznaczenia na radarze">
+        <span><i class="legend-dot ct"></i>CT</span>
+        <span><i class="legend-dot t"></i>T</span>
+        <span><i class="legend-dot bomb"></i>Bomba</span>
+      </div>
       <footer class="map-controls">
         <label class="select-label">Mapa <select id="mapSelect"></select></label>
         <label id="levelWrap" class="select-label" hidden>Poziom
@@ -113,6 +118,7 @@
           </label>
           <label class="check-field"><input id="names" type="checkbox" checked> Pseudonimy na mapie</label>
           <label class="check-field"><input id="utility" type="checkbox" checked> Granaty i bomba</label>
+          <label class="check-field"><input id="trails" type="checkbox" checked> Ślady granatów z GSI</label>
           <label class="check-field"><input id="follow" type="checkbox"> Śledź wybranego gracza</label>
         </div>
       </details>
@@ -120,7 +126,7 @@
       <details class="panel options" id="mapSettings">
         <summary>Grafika i kalibracja mapy</summary>
         <div class="options-body">
-          <label class="field">Grafika mapy
+          <label class="field" id="mapFileWrap">Grafika mapy
             <input id="mapFile" type="file" accept="image/png,image/jpeg,image/webp">
           </label>
           <p id="imageStatus" class="subtle" role="status">Dodaj własny obraz PNG, JPG lub WebP (do 15 MB).</p>
@@ -132,7 +138,7 @@
             <label class="field">Min Y <input id="miny" inputmode="decimal" type="number" step="any" required></label>
             <label class="field">Max Y <input id="maxy" inputmode="decimal" type="number" step="any" required></label>
           </div>
-          <div class="actions">
+          <div class="actions" id="calActions">
             <button id="saveCal" class="button primary" type="button">Zapisz</button>
             <button id="resetCal" class="button" type="button">Przywróć domyślne</button>
           </div>
@@ -172,6 +178,7 @@
       <button id="closeSetup" class="button icon-button" type="button" aria-label="Zamknij" title="Zamknij">×</button>
     </div>
     <p id="setupMessage" role="status">Sprawdzam konfigurację…</p>
+    <p id="receiverStatus" class="receiver-status subtle" role="status"></p>
     <p id="setupPath" class="subtle setup-path" hidden></p>
     <dl class="endpoint"><dt>Adres GSI</dt><dd id="setupAddress"></dd></dl>
     <div id="desktopSetup" class="actions" hidden>

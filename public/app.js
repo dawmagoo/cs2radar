@@ -1,18 +1,22 @@
 import {
-  boundsFields, decodeImage, defaultBounds, mapId, mapImage, maps, readCalibration, validBounds, writeCalibration,
+  boundsFields, decodeImage, defaultBounds, mapId, mapImage, maps, readCalibration, savedCalibration, validBounds, writeCalibration,
 } from './maps.js';
 import { createRadar, onMap, project } from './radar.js';
 import { demoState } from './demo.js';
+import { createLocalApi } from './local-api.js';
 
 const $ = id => document.getElementById(id);
 const dash = '—';
 const setup = window.webRadarSetup;
+const api = createLocalApi(() => $('auth').value.trim());
+const sharingControls = setup ?? api;
+const tokenKey = 'cs2-webradar:view-token';
 const staleAfter = 40_000;
 const allowedImageTypes = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const phases = { live: 'w toku', freezetime: 'zakupy', over: 'koniec rundy', warmup: 'rozgrzewka', gameover: 'koniec meczu', bomb: 'podłożona bomba', defuse: 'rozbrajanie', paused: 'pauza', halftime: 'przerwa' };
 const bombs = { carried: 'Bomba niesiona', dropped: 'Bomba na ziemi', planting: 'Podkładanie bomby', planted: 'Bomba podłożona', defusing: 'Rozbrajanie bomby', defused: 'Bomba rozbrojona', exploded: 'Bomba eksplodowała' };
 const equipmentNames = { smokegrenade: 'Dym', flashbang: 'Flash', hegrenade: 'HE', molotov: 'Mołotow', incgrenade: 'Zapalający', decoy: 'Wabik' };
-const viewControls = ['teamFilter', 'markerScale', 'names', 'utility', 'follow'];
+const viewControls = ['teamFilter', 'markerScale', 'names', 'utility', 'trails', 'follow'];
 const moneyFormat = new Intl.NumberFormat('pl-PL');
 const radar = createRadar($('radar'), zoom => { $('zoomLabel').value = `${Math.round(zoom * 100)}%`; }, focusPlayer);
 let live = {};
@@ -37,6 +41,13 @@ let focusId;
 let rosterKey = '';
 let rosterButtons = new Map();
 let shareInfo;
+let mapAccess = 'browser';
+let hostMap;
+let sharedSyncRunning = false;
+let boundsDirty = false;
+let grenadeTrails = new Map();
+let trailMatch;
+let trailStamp;
 
 function text(id, value) {
   const node = $(id);
@@ -49,7 +60,7 @@ function boundsFromForm() {
 
 function currentBounds() {
   const tentative = boundsFromForm();
-  return validBounds(tentative) ? tentative : readCalibration(activeKey, selectedMap);
+  return validBounds(tentative) ? tentative : hostMap?.bounds ?? readCalibration(activeKey, selectedMap);
 }
 
 function setBounds(bounds) {
@@ -64,26 +75,62 @@ function updateImage(next, custom, message) {
   if (image !== next) image?.release();
   image = next;
   usingCustomImage = custom;
-  $('removeImage').hidden = !custom;
+  $('removeImage').hidden = !custom || mapAccess === 'viewer';
   text('imageMode', image ? 'Grafika mapy' : 'Siatka współrzędnych');
   text('imageStatus', message);
   render();
 }
 
-async function loadMapImage() {
+async function moveLegacyMap(key, meta) {
+  let imported = false;
+  const bounds = !meta.bounds && savedCalibration(key);
+  if (bounds) {
+    await api.saveBounds(key, bounds);
+    writeCalibration(key, null);
+    imported = true;
+  }
+  if (!meta.image) {
+    const record = await mapImage(key).catch(() => null);
+    if (record) {
+      await api.saveImage(key, record);
+      await mapImage(key, null).catch(() => {});
+      imported = true;
+    }
+  }
+  return imported ? api.mapInfo(key) : meta;
+}
+
+async function loadMapImage(knownProfile, { keepBounds = false } = {}) {
   const request = ++imageRequest;
   const key = activeKey;
-  const file = `${selectedMap}${maps.get(selectedMap)?.lowerBelow !== undefined ? `_${level}` : ''}.png`;
-  updateImage(null, false, 'Sprawdzam zapisaną grafikę…');
-  try {
-    const stored = await mapImage(key);
-    if (stored) {
-      const next = await decodeImage(stored);
-      if (request !== imageRequest) return next.release();
-      return updateImage(next, true, `Zapisana grafika: ${stored.name || 'obraz mapy'}`);
+  const id = selectedMap;
+  const file = `${id}${maps.get(id)?.lowerBelow !== undefined ? `_${level}` : ''}.png`;
+  if (mapAccess !== 'browser') {
+    try {
+      let profile = knownProfile ?? await api.mapInfo(key);
+      if (request !== imageRequest) return;
+      if (mapAccess === 'host') profile = await moveLegacyMap(key, profile).catch(() => profile);
+      const blob = profile.image && await api.mapImage(key);
+      const next = blob ? await decodeImage(blob) : null;
+      if (request !== imageRequest) return next?.release();
+      hostMap = profile;
+      if (!keepBounds) setBounds(profile.bounds ?? defaultBounds(id));
+      if (next) return updateImage(next, true, mapAccess === 'viewer' ? 'Grafika udostępniona przez hosta.' : 'Zapisana grafika mapy.');
+    } catch {
+      if (request !== imageRequest || mapAccess === 'viewer') return;
     }
-  } catch {
-    // A missing or unreadable browser record leaves the bundled map available.
+  }
+  if (mapAccess !== 'viewer') {
+    try {
+      const stored = await mapImage(key);
+      if (stored) {
+        const next = await decodeImage(stored);
+        if (request !== imageRequest) return next.release();
+        return updateImage(next, true, `Zapisana grafika: ${stored.name || 'obraz mapy'}`);
+      }
+    } catch {
+      // Continue with the bundled map or coordinate grid.
+    }
   }
   if (request !== imageRequest) return;
   try {
@@ -96,7 +143,29 @@ async function loadMapImage() {
   } catch {
     // The grid is available even if a bundled image cannot be read.
   }
-  if (request === imageRequest) updateImage(null, false, 'Dodaj własny obraz PNG, JPG lub WebP (do 15 MB).');
+  if (request === imageRequest) updateImage(null, false, mapAccess === 'viewer'
+    ? 'Host korzysta z siatki współrzędnych.'
+    : 'Dodaj PNG, JPG lub WebP do 15 MB. Instrukcja repozytorium opisuje import map z CS2.');
+}
+
+async function syncSharedMap() {
+  if (mapAccess === 'browser' || connection !== 'open' || sharedSyncRunning) return;
+  const key = activeKey;
+  sharedSyncRunning = true;
+  try {
+    const profile = await api.mapInfo(key);
+    if (key !== activeKey) return;
+    if (profile.image !== hostMap?.image) await loadMapImage(profile, { keepBounds: boundsDirty });
+    else if (JSON.stringify(profile.bounds) !== JSON.stringify(hostMap?.bounds)) {
+      hostMap = profile;
+      if (!boundsDirty) setBounds(profile.bounds ?? defaultBounds(selectedMap));
+      render();
+    }
+  } catch {
+    // The next refresh can restore the shared background after a lost connection.
+  } finally {
+    sharedSyncRunning = false;
+  }
 }
 
 function refreshMap() {
@@ -124,10 +193,13 @@ function refreshMap() {
   const key = `${selectedMap}:${level}`;
   if (key === activeKey) return;
   activeKey = key;
-  setBounds(readCalibration(key, selectedMap));
+  boundsDirty = false;
+  hostMap = null;
+  setBounds(mapAccess === 'viewer' ? defaultBounds(selectedMap) : readCalibration(key, selectedMap));
   $('mapFile').value = '';
   text('calStatus', '');
   radar.reset();
+  updateImage(null, false, 'Wczytuję mapę…');
   void loadMapImage();
 }
 
@@ -220,6 +292,29 @@ function setStatus(state, label) {
   text('status', label);
 }
 
+function recordGrenadeTrails(snapshot) {
+  const match = `${snapshot.map}:${snapshot.round}`;
+  if (match !== trailMatch || snapshot.updated - trailStamp > 1500 || snapshot.updated < trailStamp) {
+    grenadeTrails = new Map();
+  }
+  if (snapshot.updated === trailStamp && match === trailMatch) return;
+  trailMatch = match;
+  trailStamp = snapshot.updated;
+  const present = new Set();
+  for (const item of snapshot.grenades || []) {
+    present.add(item.id);
+    const points = (grenadeTrails.get(item.id) || []).filter(point => snapshot.updated - point.time <= 3000);
+    const previous = points.at(-1);
+    if (!previous || Math.hypot(previous.x - item.x, previous.y - item.y) >= 3) {
+      points.push({ x: item.x, y: item.y, z: item.z, time: snapshot.updated });
+    }
+    grenadeTrails.set(item.id, points.slice(-32));
+  }
+  for (const id of grenadeTrails.keys()) {
+    if (!present.has(id)) grenadeTrails.delete(id);
+  }
+}
+
 function render() {
   const demo = demoStarted !== null;
   const bounds = currentBounds();
@@ -240,7 +335,12 @@ function render() {
   const visibleUtility = [];
   const bomb = active.bomb;
   if ($('utility').checked && fresh && correctMap) {
-    visibleUtility.push(...(active.grenades || []).filter(onLevel));
+    const trailsOn = $('trails').checked;
+    for (const item of (active.grenades || []).filter(onLevel)) {
+      const samples = demo ? item.trail : grenadeTrails.get(item.id);
+      const trail = trailsOn && samples ? samples.filter(onLevel) : [];
+      visibleUtility.push({ ...item, trail });
+    }
     if (bomb && ['planted', 'planting', 'defusing', 'dropped'].includes(bomb.state) && onLevel(bomb)) {
       visibleUtility.push({ ...bomb, type: 'bomb' });
     }
@@ -257,7 +357,10 @@ function render() {
   else setStatus('live', 'Połączono z CS2');
 
   $('demoTag').hidden = !demo;
-  $('sourceTag').hidden = demo || !active.observer;
+  $('sourceTag').hidden = demo || !live.updated;
+  text('sourceTag', active.observer ? 'Obserwator · obie drużyny' : 'Telemetria gracza');
+  if (!demo && fresh && !active.observer && visiblePlayers.length === 0 && !point) $('sourceTag').dataset.limited = 'true';
+  else delete $('sourceTag').dataset.limited;
   $('center').disabled = !showMarker;
   const elapsed = Math.max(0, Math.floor(age / 1000));
   text('lastUpdate', demo ? 'Przykład' : live.updated ? (elapsed < 1 ? 'Teraz' : `${elapsed} s temu`) : dash);
@@ -301,13 +404,16 @@ function render() {
   else if (!demo && !live.updated) hint = 'Uruchom CS2 z włączonym GSI lub wypróbuj tryb demo.';
   else if (!fresh) hint = 'Pozycja pojawi się po nadejściu nowych danych.';
   else if (!correctMap && mapId(active.map)) hint = `CS2 zgłasza mapę ${nameForMap(mapId(active.map))}.`;
-  else if (!visiblePlayers.length && !point) hint = 'CS2 nie udostępnia pozycji w tym widoku.';
+  else if (!visiblePlayers.length && !point) hint = 'CS2 nie udostępnia pozycji w tym widoku. Użyj widoku obserwatora, aby zobaczyć pozycje drużyn.';
   else if (!onLevel(player)) hint = 'Wybrany gracz jest na innym poziomie.';
   else if (point && !onMap(point)) hint = 'Pozycja poza granicami mapy. Sprawdź kalibrację.';
   $('radarHint').hidden = !hint;
   text('radarHint', hint);
   radar.draw({ image: image?.element, players: visiblePlayers, utility: visibleUtility, bounds, focusId: player?.id,
-    names: $('names').checked, markerScale: $('markerScale').valueAsNumber, follow: $('follow').checked });
+    names: $('names').checked, markerScale: $('markerScale').valueAsNumber, follow: $('follow').checked,
+    stamp: demo ? performance.now() : active.updated,
+    space: `${demo ? 'demo' : 'live'}:${active.round}:${activeKey}:${boundsFields.map(field => bounds[field]).join(',')}`,
+  });
 }
 
 function retryConnection() {
@@ -337,6 +443,7 @@ function connect() {
     if (socket !== current) return;
     connection = 'open';
     retryDelay = 800;
+    if (mapAccess === 'viewer') void syncSharedMap();
     render();
   };
   current.onmessage = event => {
@@ -344,6 +451,7 @@ function connect() {
     try {
       const incoming = JSON.parse(event.data);
       if (!incoming || !Array.isArray(incoming.players)) return;
+      recordGrenadeTrails(incoming);
       live = { ...incoming, player: incoming.player ?? incoming.players[0] };
       serverAge = incoming.updated ? Math.max(0, (incoming.sentAt ?? Date.now()) - incoming.updated) : Infinity;
       receivedAt = performance.now();
@@ -363,6 +471,7 @@ function connect() {
         if (socket !== current) return;
         if (response.status === 401) {
           connection = 'denied';
+          saveSessionToken('');
           $('lanSettings').open = true;
           render();
           return;
@@ -381,7 +490,18 @@ async function initializeConnection() {
     const reply = await response.json();
     viewTokenRequired = Boolean(reply.viewTokenRequired);
     $('lanSettings').hidden = !viewTokenRequired;
-    if (reply.viewOnly) $('setup').hidden = true;
+    if (reply.viewOnly) {
+      $('setup').hidden = true;
+      mapAccess = 'viewer';
+      $('mapFileWrap').hidden = true;
+      $('calActions').hidden = true;
+      $('removeImage').hidden = true;
+      for (const field of boundsFields) $(field).readOnly = true;
+    } else if (reply.manageMaps) {
+      mapAccess = 'host';
+      $('share').hidden = false;
+    }
+    if (mapAccess === 'host') void loadMapImage();
   } catch {
     $('lanSettings').hidden = Boolean(setup);
   }
@@ -488,25 +608,38 @@ $('focusMode').addEventListener('click', () => {
 });
 for (const id of viewControls) $(id).addEventListener('input', persistView);
 
-for (const id of boundsFields) $(id).addEventListener('input', render);
-$('saveCal').addEventListener('click', () => {
+for (const id of boundsFields) $(id).addEventListener('input', () => { boundsDirty = true; render(); });
+$('saveCal').addEventListener('click', async () => {
   const bounds = boundsFromForm();
   if (!validBounds(bounds)) return text('calStatus', 'Wprowadź cztery liczby. Wartość maksymalna musi być większa od minimalnej.');
+  const key = activeKey;
   try {
-    writeCalibration(activeKey, bounds);
-    text('calStatus', 'Kalibracja zapisana dla tej mapy i poziomu.');
+    if (mapAccess === 'host') {
+      await api.saveBounds(key, bounds);
+      writeCalibration(key, null);
+      if (key === activeKey) hostMap = { ...hostMap, bounds };
+    } else writeCalibration(key, bounds);
+    if (key === activeKey) {
+      boundsDirty = false;
+      text('calStatus', 'Kalibracja zapisana dla tej mapy i poziomu.');
+    }
   } catch {
-    text('calStatus', 'Przeglądarka nie pozwoliła zapisać kalibracji.');
+    if (key === activeKey) text('calStatus', 'Nie udało się zapisać kalibracji.');
   }
 });
-$('resetCal').addEventListener('click', () => {
+$('resetCal').addEventListener('click', async () => {
+  const key = activeKey;
   try {
-    writeCalibration(activeKey, null);
+    if (mapAccess === 'host') await api.resetBounds(key);
+    writeCalibration(key, null);
+    if (key !== activeKey) return;
+    boundsDirty = false;
+    if (hostMap) hostMap.bounds = null;
     setBounds(defaultBounds(selectedMap));
     text('calStatus', 'Przywrócono domyślne granice.');
     render();
   } catch {
-    text('calStatus', 'Nie udało się przywrócić zapisanej kalibracji.');
+    if (key === activeKey) text('calStatus', 'Nie udało się przywrócić zapisanej kalibracji.');
   }
 });
 
@@ -519,46 +652,50 @@ $('mapFile').addEventListener('change', async event => {
   }
   const key = activeKey;
   const request = ++imageRequest;
-  const existing = image;
   text('imageStatus', 'Wczytuję grafikę…');
   let next;
   try {
     next = await decodeImage(file);
   } catch {
-    if (request === imageRequest) {
-      if (!existing) await loadMapImage();
-      text('imageStatus', 'Nie udało się otworzyć obrazu. Maksymalny wymiar to 8192 px.');
-    }
+    if (request === imageRequest) text('imageStatus', 'Nie udało się otworzyć obrazu. Maksymalny wymiar to 8192 px.');
     return;
   }
   if (request !== imageRequest) return next.release();
-  let saved = true;
   try {
-    await mapImage(key, file);
+    if (mapAccess === 'host') await api.saveImage(key, file);
+    else await mapImage(key, file);
+    if (request === imageRequest) return updateImage(next, true, `Zapisana grafika: ${file.name}`);
   } catch {
-    saved = false;
+    if (request === imageRequest) text('imageStatus', 'Nie udało się zapisać grafiki mapy.');
   }
-  if (request === imageRequest) {
-    updateImage(next, true, saved ? `Zapisana grafika: ${file.name}` : 'Grafika jest dostępna do odświeżenia strony.');
-  } else {
-    next.release();
-  }
+  next.release();
 });
 
 $('removeImage').addEventListener('click', async () => {
-  if (!usingCustomImage) return;
+  if (!usingCustomImage || mapAccess === 'viewer') return;
   const key = activeKey;
   const request = ++imageRequest;
   try {
-    await mapImage(key, null);
-    if (request === imageRequest) await loadMapImage();
+    if (mapAccess === 'host') await api.removeImage(key);
+    await mapImage(key, null).catch(() => {});
+    if (request === imageRequest) await loadMapImage(undefined, { keepBounds: true });
   } catch {
     if (request === imageRequest) text('imageStatus', 'Nie udało się usunąć zapisanej grafiki.');
   }
 });
 
+function saveSessionToken(token) {
+  try {
+    if (token) sessionStorage.setItem(tokenKey, token);
+    else sessionStorage.removeItem(tokenKey);
+  } catch {
+    // The current connection is still available if site storage is restricted.
+  }
+}
+
 $('authForm').addEventListener('submit', event => {
   event.preventDefault();
+  saveSessionToken($('auth').value.trim());
   connection = 'connecting';
   render();
   connect();
@@ -575,7 +712,28 @@ if (setup) {
 } else {
   text('setupMessage', 'Skonfiguruj grę plikiem GSI. Podgląd pojawi się po odebraniu pierwszego komunikatu.');
 }
-$('setup').addEventListener('click', () => $('setupDialog').showModal());
+async function showReceiverStatus() {
+  try {
+    const response = await fetch('/health', { signal: AbortSignal.timeout(2500) });
+    const { updated, receiver } = await response.json();
+    if (!receiver) return;
+    const age = Date.now() - updated;
+    const message = receiver.rejectedAuthAt > updated && Date.now() - receiver.rejectedAuthAt < 45_000
+      ? 'CS2 wysyła dane ze starszym tokenem. Zapisz konfigurację i zrestartuj grę.'
+      : !updated ? 'Serwer czeka na pierwszy komunikat z gry.'
+        : age > staleAfter ? 'Serwer odebrał dane wcześniej. Sprawdź, czy CS2 jest uruchomione.'
+          : receiver.observer ? `Tryb obserwatora · pozycje: ${receiver.positions}`
+            : receiver.positions ? 'Odbieram bieżącą pozycję i telemetrię gracza.'
+              : 'Odbieram telemetrię. Widok obserwatora może udostępnić pozycje drużyn.';
+    text('receiverStatus', message);
+  } catch {
+    text('receiverStatus', 'Sprawdzanie połączenia z lokalnym serwerem…');
+  }
+}
+$('setup').addEventListener('click', () => {
+  $('setupDialog').showModal();
+  void showReceiverStatus();
+});
 $('closeSetup').addEventListener('click', () => $('setupDialog').close());
 
 function showSharing(info) {
@@ -601,9 +759,19 @@ async function shareAction(action) {
   text('shareFeedback', '');
   try {
     if (action === 'shareCopy') {
-      if (await setup.shareCopy()) text('shareFeedback', 'Skopiowano link.');
+      if (setup) {
+        if (await setup.shareCopy()) text('shareFeedback', 'Skopiowano link.');
+      } else {
+        try {
+          await navigator.clipboard.writeText(shareInfo.link);
+          text('shareFeedback', 'Skopiowano link.');
+        } catch {
+          $('shareLink').select();
+          text('shareFeedback', 'Zaznaczono link. Możesz go skopiować.');
+        }
+      }
     } else {
-      const info = await setup[action]($('shareNetwork').value);
+      const info = await sharingControls[action]($('shareNetwork').value);
       showSharing(info);
     }
   } catch {
@@ -613,22 +781,22 @@ async function shareAction(action) {
   }
 }
 
-if (setup) {
-  $('share').hidden = false;
-  $('share').addEventListener('click', () => {
-    $('shareDialog').showModal();
-    void shareAction('shareStatus');
-  });
-  for (const [button, action] of [['startShare', 'shareStart'], ['stopShare', 'shareStop'], ['copyShare', 'shareCopy']]) {
-    $(button).addEventListener('click', () => void shareAction(action));
-  }
+$('share').addEventListener('click', () => {
+  $('shareDialog').showModal();
+  void shareAction('shareStatus');
+});
+for (const [button, action] of [['startShare', 'shareStart'], ['stopShare', 'shareStop'], ['copyShare', 'shareCopy']]) {
+  $(button).addEventListener('click', () => void shareAction(action));
 }
 $('closeShare').addEventListener('click', () => $('shareDialog').close());
 
 const sharedToken = new URLSearchParams(location.hash.slice(1)).get('token');
 if (sharedToken) {
   $('auth').value = sharedToken;
+  saveSessionToken(sharedToken);
   history.replaceState(null, '', location.pathname + location.search);
+} else {
+  try { $('auth').value = sessionStorage.getItem(tokenKey) ?? ''; } catch { /* optional site storage */ }
 }
 
 fallbackInfo = fetch('/api/map-images').then(response => response.ok ? response.json() : []).catch(() => []);
@@ -636,4 +804,8 @@ refreshMap();
 void initializeConnection();
 render();
 setInterval(render, 1000);
+setInterval(() => {
+  void syncSharedMap();
+  if ($('setupDialog').open) void showReceiverStatus();
+}, 2500);
 setInterval(() => { if (demoStarted !== null) render(); }, 100);

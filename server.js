@@ -9,6 +9,8 @@ const { WebSocket, WebSocketServer } = require('ws');
 const { renderGsiConfig } = require('./steam');
 const { version } = require('./package.json');
 const { isRecord, readState } = require('./telemetry');
+const { createMapStore, mapKey, maxImageBytes } = require('./map-store');
+const { createLanSharing } = require('./lan-sharing');
 
 const publicDir = path.join(__dirname, 'public');
 const loopbackHost = '127.0.0.1';
@@ -38,17 +40,32 @@ function createFeed() {
   };
 }
 
-function createRadarServer({ host = loopbackHost, gsiToken = '', viewToken = '', feed = createFeed(), readOnly = false } = {}) {
+function createRadarServer({
+  host = loopbackHost, gsiToken = '', viewToken = '', feed = createFeed(), readOnly = false,
+  maps = createMapStore(), lanAddresses,
+} = {}) {
   if (readOnly && !viewToken) throw new Error('Podgląd wymaga tokenu.');
   if (!localHosts.has(host) && !readOnly && (!gsiToken || !viewToken || gsiToken === viewToken)) {
     throw new Error('Tryb LAN wymaga dwóch różnych wartości GSI_TOKEN i VIEW_TOKEN.');
   }
   const localOnly = localHosts.has(host);
+  const canManage = localOnly && !readOnly;
+  const sharing = canManage ? createLanSharing(async (ip, token) => {
+    const listener = createRadarServer({ host: ip, viewToken: token, feed, readOnly: true, maps });
+    try {
+      const port = await listener.listen(0);
+      return { port, close: listener.close };
+    } catch (error) {
+      await listener.close();
+      throw error;
+    }
+  }, lanAddresses) : null;
   const app = express();
   const server = createServer({ requestTimeout: 15_000, headersTimeout: 10_000, keepAliveTimeout: 4_000 }, app);
   const wss = new WebSocketServer({ noServer: true, maxPayload: 2_048 });
   let lastAccepted = 0;
   let closing;
+  let rejectedAuthAt = 0;
 
   function allowedHost(req) {
     if (!localOnly) return Boolean(req.headers.host);
@@ -89,8 +106,64 @@ function createRadarServer({ host = loopbackHost, gsiToken = '', viewToken = '',
   });
 
   app.get('/api/state', (req, res) => canView(req) ? res.json(feed.snapshot()) : res.sendStatus(401));
-  app.get('/health', (req, res) => res.json({
-    ok: true, version, updated: feed.snapshot().updated, clients: wss.clients.size, viewTokenRequired: Boolean(viewToken), viewOnly: readOnly,
+  app.get('/health', (req, res) => {
+    const state = feed.snapshot();
+    res.json({
+      ok: true, version, updated: state.updated, clients: wss.clients.size,
+      viewTokenRequired: Boolean(viewToken), viewOnly: readOnly, manageMaps: canManage,
+      ...(canManage ? { receiver: { rejectedAuthAt, positions: state.players.length, observer: state.observer } } : {}),
+    });
+  });
+
+  function manage(req, res, next) {
+    if (!canManage || req.get('X-WebRadar-Local') !== '1' || !canView(req)) return res.sendStatus(403);
+    next();
+  }
+
+  function allowViewer(req, res, next) {
+    if (!canView(req)) return res.sendStatus(401);
+    next();
+  }
+
+  function asyncRoute(action) {
+    return (req, res, next) => action(req, res).catch(next);
+  }
+
+  app.get('/api/share', manage, (req, res) => res.json(sharing.status()));
+  app.put('/api/share', manage, express.json({ limit: '1kb' }), asyncRoute(async (req, res) => {
+    res.json(await sharing.start(req.body?.ip));
+  }));
+  app.delete('/api/share', manage, asyncRoute(async (req, res) => res.json(await sharing.stop())));
+
+  function checkedMap(req, res, next) {
+    res.locals.mapKey = mapKey(req.params.map, req.params.floor);
+    if (!res.locals.mapKey) return res.sendStatus(404);
+    next();
+  }
+
+  const mapRoute = '/api/maps/:map/:floor';
+  app.get(mapRoute, allowViewer, checkedMap, asyncRoute(async (req, res) => res.json(await maps.info(res.locals.mapKey))));
+  app.get(`${mapRoute}/image`, allowViewer, checkedMap, asyncRoute(async (req, res) => {
+    const image = await maps.readImage(res.locals.mapKey);
+    if (!image) return res.sendStatus(404);
+    res.set('ETag', `"${image.etag}"`).type(image.type).send(image.bytes);
+  }));
+  app.put(`${mapRoute}/image`, manage, checkedMap,
+    express.raw({ type: ['image/png', 'image/jpeg', 'image/webp'], limit: maxImageBytes, inflate: false }),
+    asyncRoute(async (req, res) => {
+      const type = req.get('Content-Type')?.split(';', 1)[0].trim().toLowerCase();
+      res.sendStatus(await maps.writeImage(res.locals.mapKey, req.body, type) ? 204 : 415);
+    }));
+  app.put(`${mapRoute}/bounds`, manage, checkedMap, express.json({ limit: '1kb' }), asyncRoute(async (req, res) => {
+    res.sendStatus(await maps.writeBounds(res.locals.mapKey, req.body) ? 204 : 400);
+  }));
+  app.delete(`${mapRoute}/image`, manage, checkedMap, asyncRoute(async (req, res) => {
+    await maps.removeImage(res.locals.mapKey);
+    res.sendStatus(204);
+  }));
+  app.delete(`${mapRoute}/bounds`, manage, checkedMap, asyncRoute(async (req, res) => {
+    await maps.removeBounds(res.locals.mapKey);
+    res.sendStatus(204);
   }));
 
   app.get('/api/map-images', (req, res) => {
@@ -109,7 +182,10 @@ function createRadarServer({ host = loopbackHost, gsiToken = '', viewToken = '',
   app.post('/gsi', express.json({ limit: '256kb', inflate: false }), (req, res) => {
     if (!req.is('application/json')) return res.sendStatus(415);
     const body = req.body;
-    if (!tokenMatches(body?.auth?.token, gsiToken)) return res.sendStatus(401);
+    if (!tokenMatches(body?.auth?.token, gsiToken)) {
+      rejectedAuthAt = Date.now();
+      return res.sendStatus(401);
+    }
     if (!isRecord(body) || !['provider', 'map', 'player', 'round', 'allplayers', 'phase_countdowns', 'grenades', 'bomb'].some(key => Object.hasOwn(body, key))) {
       return res.status(400).json({ error: 'Brak pól GSI.' });
     }
@@ -138,8 +214,21 @@ function createRadarServer({ host = loopbackHost, gsiToken = '', viewToken = '',
     wss.handleUpgrade(req, socket, head, client => wss.emit('connection', client));
   });
 
+  const waitingForPong = new Set();
+  const heartbeat = setInterval(() => {
+    for (const client of wss.clients) {
+      if (waitingForPong.has(client)) client.terminate();
+      else if (client.readyState === WebSocket.OPEN) {
+        waitingForPong.add(client);
+        client.ping();
+      }
+    }
+  }, 15_000).unref();
+
   wss.on('connection', client => {
     client.on('error', () => {});
+    client.on('pong', () => waitingForPong.delete(client));
+    client.on('close', () => waitingForPong.delete(client));
     client.send(JSON.stringify(feed.snapshot()));
   });
 
@@ -160,17 +249,18 @@ function createRadarServer({ host = loopbackHost, gsiToken = '', viewToken = '',
   }
 
   function close() {
-    closing ??= new Promise(resolve => {
+    closing ??= Promise.all([sharing?.dispose(), new Promise(resolve => {
+      clearInterval(heartbeat);
       unsubscribe();
       for (const client of wss.clients) client.terminate();
       wss.close();
       server.close(resolve);
       server.closeAllConnections();
-    });
+    })]);
     return closing;
   }
 
-  return { listen, close, feed };
+  return { listen, close, feed, sharing };
 }
 
 async function startWeb() {

@@ -227,3 +227,12 @@ dialog p { margin-block: 11px; }
   .layout[data-focus="true"] .radar-frame { width: 100%; }
   .layout[data-focus="true"] .sidebar { grid-template-columns: 1fr; }
 }
+
+.radar-legend { display: flex; justify-content: center; flex-wrap: wrap; gap: 12px; margin-top: 9px; color: var(--muted); font-size: .74rem; }
+.radar-legend span { display: flex; align-items: center; gap: 5px; }
+.legend-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--blue); }
+.legend-dot.t { background: var(--amber); }
+.legend-dot.bomb { background: var(--amber); border-radius: 1px; transform: rotate(45deg); }
+#sourceTag[data-limited="true"] { color: var(--amber); }
+.receiver-status:empty { display: none; }
+.receiver-status { padding: 8px 10px; background: #111b20; border: 1px solid #34484f; border-radius: 6px; }

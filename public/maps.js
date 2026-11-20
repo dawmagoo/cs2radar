@@ -31,14 +31,18 @@ function validBounds(bounds) {
     && bounds.maxx > bounds.minx && bounds.maxy > bounds.miny;
 }
 
-function readCalibration(key, id) {
+function savedCalibration(key) {
   try {
     const value = JSON.parse(localStorage.getItem(`cal:${key}`));
     if (validBounds(value)) return value;
   } catch {
     // A damaged or unavailable calibration falls back to the map preset.
   }
-  return defaultBounds(id);
+  return null;
+}
+
+function readCalibration(key, id) {
+  return savedCalibration(key) ?? defaultBounds(id);
 }
 
 function writeCalibration(key, value) {
@@ -83,4 +87,4 @@ async function decodeImage(source) {
   }
 }
 
-export { boundsFields, decodeImage, defaultBounds, mapId, mapImage, maps, readCalibration, validBounds, writeCalibration };
+export { boundsFields, decodeImage, defaultBounds, mapId, mapImage, maps, readCalibration, savedCalibration, validBounds, writeCalibration };
